@@ -48,6 +48,9 @@ endif()
 
 message(STATUS "HIP and hipBLAS found")
 
+message(STATUS "hipBLAS version: ${hipblas_VERSION}")
+
+
 # Workaround old compilers
 set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} --gpu-max-threads-per-block=1024")
 
