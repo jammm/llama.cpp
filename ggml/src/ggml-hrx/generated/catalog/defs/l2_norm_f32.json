@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "l2_norm_f32",
+  "op": "L2_NORM",
+  "sources": {
+    "l2_norm_f32": {
+      "path": "kernels/l2_norm_f32.loom",
+      "sha256": "ead5546909f655e8080834295901bf0ad48dbdf2dc0e8a200d49f7b83cfa5430"
+    }
+  },
+  "artifacts": {
+    "l2_norm_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "l2_norm_f32",
+      "root_symbol": "@hrx2_l2_norm_f32",
+      "path": "artifacts/l2_norm_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

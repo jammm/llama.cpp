@@ -1,0 +1,29 @@
+{
+  "schema": "ggml-hrx-test-schedule-v1",
+  "target_key": "gfx1100",
+  "family": "cont_f32",
+  "cases": [
+    {
+      "id": "cont_f32_cont_f32_generic_wg256_decode-1_ncols128_nrows1",
+      "op": "CONT",
+      "scenario": "cont",
+      "expected_route_id": "cont_f32_generic_wg256",
+      "schedule": {
+        "source": "llm-atlas",
+        "scenario": "decode-1"
+      },
+      "supports": {
+        "src0_type": "F32",
+        "dst_type": "F32",
+        "layout": "row_contiguous_src_to_contiguous_dst"
+      },
+      "shape": {
+        "ncols": 128,
+        "nrows": 1
+      },
+      "tolerance": 1e-06,
+      "repeat": 1
+    }
+  ],
+  "schedule_file": "tests/gfx1100/cont_f32.json"
+}

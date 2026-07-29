@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "mul_mat_f32_f32_decode_vec8",
+  "op": "MUL_MAT",
+  "sources": {
+    "mul_mat_f32_f32_decode_vec8": {
+      "path": "kernels/mul_mat_f32_f32_decode_vec8.loom",
+      "sha256": "a4cd9c1ac553226a232cbd6bba4c054456ffebfa0a5cc4b1b430c3c6607916eb"
+    }
+  },
+  "artifacts": {
+    "mul_mat_f32_f32_decode_vec8_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_f32_f32_decode_vec8",
+      "root_symbol": "@hrx2_mul_mat_f32_f32_decode_vec8",
+      "path": "artifacts/mul_mat_f32_f32_decode_vec8_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

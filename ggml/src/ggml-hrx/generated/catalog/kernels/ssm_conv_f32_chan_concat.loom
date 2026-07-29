@@ -1,0 +1,178 @@
+// Depthwise causal conv over the Gated-DeltaNet window, reading the window's two
+// pieces instead of a materialised copy of them.
+//
+// llama.cpp builds the conv window with a CONCAT that prepends the d_conv-1
+// carried state rows to this layer's x. On the production shape that concat
+// writes 16.9 MB -- [8192, 515] f32 -- purely so this kernel can read it back,
+// and costs 104 us a call, 3.1 ms a graph, for three rows of new data.
+//
+// Reading the pieces directly costs one branch per tap. It is wave-uniform: lanes
+// take consecutive channels and d_inner is far wider than a workgroup, so every
+// lane of a wave shares the same token, and only the first d_conv-1 tokens take
+// the state side at all.
+//
+// Channels-first window layout only ({d_inner, d_conv-1+n_t, n_s}), which is what
+// the concat produces. src0 is the state {d_inner, d_conv-1}, src1 is x
+// {d_inner, n_t}, src2 is the filter {d_conv, d_inner}.
+
+config.decl @hrx2.shape.ssm_conv.d_conv : %value: index where [range(%value, 4, 4)]
+config.decl @hrx2.shape.ssm_conv.d_inner : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.shape.ssm_conv.n_t : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.shape.ssm_conv.n_s : %value: index where [range(%value, 1, 1024)]
+config.decl @hrx2.shape.ssm_conv.state_row_stride : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2.shape.ssm_conv.x_row_stride : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2.tuning.ssm_conv.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_ssm_conv_f32_chan_concat") @hrx2_ssm_conv_f32_chan_concat() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %d_inner = config.get @hrx2.shape.ssm_conv.d_inner : index
+  %n_t = config.get @hrx2.shape.ssm_conv.n_t : index
+  %n_s = config.get @hrx2.shape.ssm_conv.n_s : index
+  %wg = config.get @hrx2.tuning.ssm_conv.workgroup_size : index
+  %rows = index.mul %n_t, %n_s : index
+  %total = index.mul %rows, %d_inner : index
+  %rounding = index.add %wg, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %groups = index.div %rounded, %wg : index
+  kernel.launch.config workgroups(%groups, %unit, %unit) workgroup_size(%wg, %unit, %unit) : index
+} launch(%state: buffer, %x: buffer, %filt: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  %two = index.constant 2 : index
+  %three = index.constant 3 : index
+  %sixteen = index.constant 16 : index
+
+  %d_inner = config.get @hrx2.shape.ssm_conv.d_inner : index
+  %n_t = config.get @hrx2.shape.ssm_conv.n_t : index
+  %n_s = config.get @hrx2.shape.ssm_conv.n_s : index
+  %sts = config.get @hrx2.shape.ssm_conv.state_row_stride : index
+  %xrs = config.get @hrx2.shape.ssm_conv.x_row_stride : index
+  %wg = config.get @hrx2.tuning.ssm_conv.workgroup_size : index
+
+  %di = index.assume %d_inner [range(%d_inner, 1, 1048576)] : index
+  %nt = index.assume %n_t [range(%n_t, 1, 1048576)] : index
+  %ns = index.assume %n_s [range(%n_s, 1, 1024)] : index
+  %stsb = index.assume %sts [range(%sts, 1, 16777216)] : index
+  %xrsb = index.assume %xrs [range(%xrs, 1, 16777216)] : index
+
+  %rows0 = index.mul %nt, %ns : index
+  %total0 = index.mul %rows0, %di : index
+  %total = index.assume %total0 [range(%total0, 1, 1073741823)] : index
+
+  %group0 = kernel.workgroup.id<x> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %group = index.assume %group0 [range(%group0, 0, 16777215)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %off0 = index.mul %group, %wg : index
+  %idx0 = index.add %off0, %lane : index
+  %idx = index.assume %idx0 [range(%idx0, 0, 1073741823)] : index
+  %in_bounds = index.cmp ult, %idx, %total : index
+
+  %st_g = buffer.assume.memory_space<global> %state : buffer
+  %x_g = buffer.assume.memory_space<global> %x : buffer
+  %f_g = buffer.assume.memory_space<global> %filt : buffer
+  %dst_g = buffer.assume.memory_space<global> %dst : buffer
+  %st_na, %x_na, %f_na = buffer.assume.noalias %st_g, %x_g, %f_g : buffer, buffer, buffer
+  %dst_na = buffer.assume.memory_space<global> %dst_g : buffer
+  %st_view = buffer.view %st_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %x_view = buffer.view %x_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %dst_view = buffer.view %dst_na[%base] : buffer -> view<1073741824xf32, #dense>
+
+  scf.if %in_bounds {
+    // Consecutive lanes take consecutive channels, so every load below is one
+    // contiguous burst across the wave.
+    %chan = index.rem %idx, %di : index
+    %row = index.div %idx, %di : index
+    %tok = index.rem %row, %nt : index
+    %seq = index.div %row, %nt : index
+
+    // Per-sequence origins. The state side carries d_conv-1 = 3 rows.
+    %st_span = index.mul %three, %stsb : index
+    %st_seq = index.mul %seq, %st_span : index
+    %st_o0 = index.add %st_seq, %chan : index
+    %x_span = index.mul %nt, %xrsb : index
+    %x_seq = index.mul %seq, %x_span : index
+    %x_o0 = index.add %x_seq, %chan : index
+
+    // Tap j reads window row tok + j: the state for rows 0..2, x for the rest.
+    %w_e0 = index.mul %chan, %sixteen : index
+    %w_e = index.assume %w_e0 [range(%w_e0, 0, 1073741820)] : index
+    %w_o = index.cast %w_e : index to offset
+    %w_v = buffer.view %f_na[%w_o] : buffer -> view<4xf32, #dense>
+    %w = vector.load %w_v[%zero] : view<4xf32, #dense> -> vector<4xf32>
+    %w0 = vector.extract %w[%zero] : vector<4xf32> -> f32
+    %w1 = vector.extract %w[%one] : vector<4xf32> -> f32
+    %w2 = vector.extract %w[%two] : vector<4xf32> -> f32
+    %w3 = vector.extract %w[%three] : vector<4xf32> -> f32
+
+    %r0 = index.add %tok, %zero : index
+    %r1 = index.add %tok, %one : index
+    %r2 = index.add %tok, %two : index
+    %r3 = index.add %tok, %three : index
+
+    %s0 = index.cmp ult, %r0, %three : index
+    %x0 = scf.if %s0 -> (f32) {
+      %i0 = index.mul %r0, %stsb : index
+      %i1 = index.add %i0, %st_o0 : index
+      %i = index.assume %i1 [range(%i1, 0, 1073741823)] : index
+      %v = view.load %st_view[%i] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    } else {
+      %j0 = index.sub %r0, %three : index
+      %i0 = index.mul %j0, %xrsb : index
+      %i1 = index.add %i0, %x_o0 : index
+      %i = index.assume %i1 [range(%i1, 0, 1073741823)] : index
+      %v = view.load %x_view[%i] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    }
+
+    %s1 = index.cmp ult, %r1, %three : index
+    %x1 = scf.if %s1 -> (f32) {
+      %i0 = index.mul %r1, %stsb : index
+      %i1 = index.add %i0, %st_o0 : index
+      %i = index.assume %i1 [range(%i1, 0, 1073741823)] : index
+      %v = view.load %st_view[%i] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    } else {
+      %j0 = index.sub %r1, %three : index
+      %i0 = index.mul %j0, %xrsb : index
+      %i1 = index.add %i0, %x_o0 : index
+      %i = index.assume %i1 [range(%i1, 0, 1073741823)] : index
+      %v = view.load %x_view[%i] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    }
+
+    %s2 = index.cmp ult, %r2, %three : index
+    %x2 = scf.if %s2 -> (f32) {
+      %i0 = index.mul %r2, %stsb : index
+      %i1 = index.add %i0, %st_o0 : index
+      %i = index.assume %i1 [range(%i1, 0, 1073741823)] : index
+      %v = view.load %st_view[%i] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    } else {
+      %j0 = index.sub %r2, %three : index
+      %i0 = index.mul %j0, %xrsb : index
+      %i1 = index.add %i0, %x_o0 : index
+      %i = index.assume %i1 [range(%i1, 0, 1073741823)] : index
+      %v = view.load %x_view[%i] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    }
+
+    // The last tap is never on the state side: row tok+3 >= 3 always.
+    %j3 = index.sub %r3, %three : index
+    %i3_0 = index.mul %j3, %xrsb : index
+    %i3_1 = index.add %i3_0, %x_o0 : index
+    %i3 = index.assume %i3_1 [range(%i3_1, 0, 1073741823)] : index
+    %x3 = view.load %x_view[%i3] : view<1073741824xf32, #dense> -> f32
+
+    %p0 = scalar.mulf<nnan|ninf|nsz> %x0, %w0 : f32
+    %p1 = scalar.fmaf<nnan|ninf|nsz> %x1, %w1, %p0 : f32
+    %p2 = scalar.fmaf<nnan|ninf|nsz> %x2, %w2, %p1 : f32
+    %acc = scalar.fmaf<nnan|ninf|nsz> %x3, %w3, %p2 : f32
+
+    view.store %acc, %dst_view[%idx] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "flash_attn_ext_f32",
+  "op": "FLASH_ATTN_EXT",
+  "sources": {
+    "flash_attn_ext_f32": {
+      "path": "kernels/flash_attn_ext_f32.loom",
+      "sha256": "d903434e8883e12b0a87969515858ae325e3f62d4db21d63a96ac7d34f038a5d"
+    },
+    "flash_attn_wave_f32": {
+      "path": "kernels/flash_attn_wave_f32.loom",
+      "sha256": "1e0fb2681a1523c288a4dbccb85f7f690854f3cd37561251c32e83344e369f36"
+    },
+    "flash_attn_wmma_f32": {
+      "path": "kernels/flash_attn_wmma_f32.loom",
+      "sha256": "cd185743084d62c7a2582741c386fa32279c40ba7514769c1582dc2463fac6c5"
+    },
+    "flash_attn_wmma_gate_epilogue": {
+      "path": "kernels/flash_attn_wmma_gate_epilogue.loom",
+      "sha256": "0320cc0cebbdb42ac0d06837ed21b4290444eb4eb1b54a5b781a076b29877010"
+    }
+  },
+  "artifacts": {
+    "flash_attn_ext_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "flash_attn_ext_f32",
+      "root_symbol": "@hrx2_flash_attn_ext_f32_f16",
+      "path": "artifacts/flash_attn_ext_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "flash_attn_wave_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "flash_attn_wave_f32",
+      "root_symbol": "@hrx2_flash_attn_ext_f32_f16_wave",
+      "path": "artifacts/flash_attn_wave_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "flash_attn_wmma_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "flash_attn_wmma_f32",
+      "root_symbol": "@hrx2_flash_attn_ext_f32_f16_wmma",
+      "path": "artifacts/flash_attn_wmma_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "flash_attn_wmma_gate_epilogue_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "flash_attn_wmma_gate_epilogue",
+      "root_symbol": "@hrx2_flash_attn_ext_f32_f16_wmma_gate_epilogue",
+      "path": "artifacts/flash_attn_wmma_gate_epilogue_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

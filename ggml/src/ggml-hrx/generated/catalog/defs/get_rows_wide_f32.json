@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "get_rows_wide_f32",
+  "op": "GET_ROWS",
+  "sources": {
+    "get_rows_wide_f32": {
+      "path": "kernels/get_rows_wide_f32.loom",
+      "sha256": "6c434eef56caf78d73c5b2786c6d7254c927e00aedd7ec8bce67f4a1fabaf04d"
+    }
+  },
+  "artifacts": {
+    "get_rows_wide_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "get_rows_wide_f32",
+      "root_symbol": "@hrx2_get_rows_wide_f32",
+      "path": "artifacts/get_rows_wide_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "mul_mat_f16_f32_batched_cont",
+  "op": "CONT",
+  "sources": {
+    "mul_mat_f16_f32_batched": {
+      "path": "kernels/mul_mat_f16_f32_batched.loom",
+      "sha256": "93c6c8c25834702c9bac914e5982a212c7616ccb63034479d9f28c4d0ea91f53"
+    },
+    "mul_mat_vec_f16_f32_f32_vk_clone_k768": {
+      "path": "kernels/mul_mat_vec_f16_f32_f32_vk_clone_k768.loom",
+      "sha256": "1d915e79152a357c93d58f2cef800fa83c38782ebd1b0277bdb8375da328ec19"
+    }
+  },
+  "artifacts": {
+    "mul_mat_f16_f32_batched_kqv_cont_decode_k768_rows2_wg64_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_vec_f16_f32_f32_vk_clone_k768",
+      "root_symbol": "@hrx2_vk_clone_mul_mat_vec_f16_f32_f32_cont",
+      "path": "artifacts/mul_mat_f16_f32_batched_kqv_cont_decode_k768_rows2_wg64_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_f16_f32_batched_kqv_cont_tile128_wg256_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_f16_f32_batched",
+      "root_symbol": "@hrx2_mul_mat_f16_f32_batched_kqv_wmma128x128_contiguous",
+      "path": "artifacts/mul_mat_f16_f32_batched_kqv_cont_tile128_wg256_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

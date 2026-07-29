@@ -1,0 +1,59 @@
+// Row-wise L2 normalization: dst = x * rsqrt(max(sum(x^2), eps^2)).
+//
+// Applied to the convolved q and k projections in every Gated-DeltaNet layer
+// (q_conv_predelta / k_conv_predelta), so 2 per SSM layer x 30 layers. HRX had
+// no builder for it.
+//
+// One workgroup per row with a strided reduction, matching hrx2_rms_norm_f32;
+// that makes the kernel shape-generic so a single wide route covers every
+// (ncols, nrows) the graph uses.
+
+config.decl @hrx2.shape.ncols : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.nrows : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.tuning.l2_norm.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_l2_norm_f32") @hrx2_l2_norm_f32() {
+  %unit = index.constant 1 : index
+  %nrows = config.get @hrx2.shape.nrows : index
+  %workgroup_size = config.get @hrx2.tuning.l2_norm.workgroup_size : index
+  kernel.launch.config workgroups(%nrows, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%eps: f32, %src0: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %ncols = config.get @hrx2.shape.ncols : index
+  %nrows = config.get @hrx2.shape.nrows : index
+  %workgroup_size = config.get @hrx2.tuning.l2_norm.workgroup_size : index
+  %ncols_bounded = index.assume %ncols [range(%ncols, 1, 65536)] : index
+  %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
+
+  %row0 = kernel.workgroup.id<x> : index
+  %row = index.assume %row0 [range(%row0, 0, 1048575)] : index
+  %lane0 = kernel.workitem.id<x> : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %zero_f32 = scalar.constant 0.0 : f32
+
+  %src_global = buffer.assume.memory_space<global> %src0 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src_noalias, %dst_noalias = buffer.assume.noalias %src_global, %dst_global : buffer, buffer
+  %src_view = buffer.view %src_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+
+  %sum = scf.for %col = [%lane to %ncols_bounded step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
+    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
+    %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
+    %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %square : f32
+    scf.yield %next : f32
+  }
+
+  %row_sum = kernel.workgroup.reduce<addf> %sum : f32
+  // torch.nn.functional.normalize clamps the *squared* norm against eps^2.
+  %eps_sq = scalar.mulf<nnan|ninf|nsz> %eps, %eps : f32
+  %clamped = scalar.maxnumf %row_sum, %eps_sq : f32
+  %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %clamped : f32
+
+  scf.for %col = [%lane to %ncols_bounded step %workgroup_size] {
+    %value = view.load %src_view[%row, %col] : view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense> -> f32
+    %result = scalar.mulf<nnan|ninf|nsz> %value, %scale : f32
+    view.store %result, %dst_view[%row, %col] : f32, view<[%nrows_bounded]x[%ncols_bounded]xf32, #dense>
+  }
+  kernel.return
+}

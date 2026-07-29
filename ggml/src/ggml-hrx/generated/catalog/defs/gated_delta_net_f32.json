@@ -1,0 +1,42 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "gated_delta_net_f32",
+  "op": "GATED_DELTA_NET",
+  "sources": {
+    "gated_delta_net_f32": {
+      "path": "kernels/gated_delta_net_f32.loom",
+      "sha256": "d7f39e12a6ff7ea05db4230d65f1e0c8efc29141c704d5702115cfca2b6fc9b5"
+    },
+    "gated_delta_net_f32_state_cache_decode": {
+      "path": "kernels/gated_delta_net_f32_state_cache_decode.loom",
+      "sha256": "3e8cbaf3446afcfc5d3d0b543e5056957aea9f048cff70b8e949bc111eb7c6de"
+    },
+    "gated_delta_net_f32_qk_l2_full_head": {
+      "path": "kernels/gated_delta_net_f32_qk_l2_full_head.loom",
+      "sha256": "912f62bd3b2d6f30f7749926a900a53a326f4ebc5536ef14bdb718a722261323"
+    }
+  },
+  "artifacts": {
+    "gated_delta_net_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "gated_delta_net_f32",
+      "root_symbol": "@hrx2_gated_delta_net_f32_sv128",
+      "path": "artifacts/gated_delta_net_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "gated_delta_net_f32_state_cache_decode_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "gated_delta_net_f32_state_cache_decode",
+      "root_symbol": "@hrx2_gated_delta_net_f32_sv128_state_cache_decode",
+      "path": "artifacts/gated_delta_net_f32_state_cache_decode_loombc.loombc",
+      "storage": "embedded"
+    },
+    "gated_delta_net_f32_qk_l2_full_head_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "gated_delta_net_f32_qk_l2_full_head",
+      "root_symbol": "@hrx2_gated_delta_net_f32_sv128_qk_l2_full_head",
+      "path": "artifacts/gated_delta_net_f32_qk_l2_full_head_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

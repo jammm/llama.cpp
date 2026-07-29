@@ -1,0 +1,45 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "argsort_f32_i32",
+  "op": "ARGSORT",
+  "sources": {
+    "argsort_f32_i32": {
+      "path": "kernels/argsort_f32_i32.loom",
+      "sha256": "2663efa25eb1df04fbc667cd8705f83468d5b761200821ad538a28f07fbfafcc"
+    },
+    "argsort_rank": {
+      "path": "kernels/argsort_rank.loom",
+      "sha256": "f73f33035f090b50a89c800b144e5e2effe9747fadd7f2b40369214c814f96b9"
+    }
+  },
+  "artifacts": {
+    "argsort_f32_i32_n128_r16_desc_wg128_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "argsort_f32_i32",
+      "root_symbol": "@hrx2_argsort_f32_i32_desc",
+      "path": "artifacts/argsort_f32_i32_n128_r16_desc_wg128_loombc.loombc",
+      "storage": "embedded"
+    },
+    "argsort_f32_i32_n128_r1_desc_wg128_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "argsort_f32_i32",
+      "root_symbol": "@hrx2_argsort_f32_i32_desc",
+      "path": "artifacts/argsort_f32_i32_n128_r1_desc_wg128_loombc.loombc",
+      "storage": "embedded"
+    },
+    "argsort_f32_i32_n128_r64_desc_wg128_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "argsort_f32_i32",
+      "root_symbol": "@hrx2_argsort_f32_i32_desc",
+      "path": "artifacts/argsort_f32_i32_n128_r64_desc_wg128_loombc.loombc",
+      "storage": "embedded"
+    },
+    "argsort_rank_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "argsort_rank",
+      "root_symbol": "@hrx2_argsort_f32_i32_desc_rank256",
+      "path": "artifacts/argsort_rank_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

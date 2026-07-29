@@ -1,0 +1,31 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "mul_mat_f32_tiled",
+  "op": "MUL_MAT",
+  "sources": {
+    "mul_mat_f32_tiled": {
+      "path": "kernels/mul_mat_f32_tiled.loom",
+      "sha256": "adeed760f89e47a733df65e124a63db901dc1ca711a152194871383339f73a30"
+    },
+    "mul_mat_f32_tiled_ncol": {
+      "path": "kernels/mul_mat_f32_tiled_ncol.loom",
+      "sha256": "e1bb453a5f52a08fd36cbff67601c90d39f2b75a470f6c45dc5f891da782e44f"
+    }
+  },
+  "artifacts": {
+    "mul_mat_f32_tiled_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_f32_tiled",
+      "root_symbol": "@hrx2_mul_mat_f32_f32_tiled32x32x64",
+      "path": "artifacts/mul_mat_f32_tiled_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_f32_tiled_ncol_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_f32_tiled_ncol",
+      "root_symbol": "@hrx2_mul_mat_f32_f32_tiled32x16x64",
+      "path": "artifacts/mul_mat_f32_tiled_ncol_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

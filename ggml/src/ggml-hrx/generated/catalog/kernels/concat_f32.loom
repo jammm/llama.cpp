@@ -1,0 +1,105 @@
+// Concatenation along dim 0 with arbitrary source strides.
+//
+//   dst[i0,i1,i2] = i0 < s0_ne0 ? src0[i0,i1,i2] : src1[i0 - s0_ne0, i1, i2]
+//
+// Used once per Gated-DeltaNet layer to prepend the cached conv state to the
+// qkv projection (conv_states || qkv_mixed). The second operand is a transpose
+// view there (nb0 = row bytes, nb1 = 4), so the kernel takes explicit element
+// strides for both sources rather than assuming contiguity. dst is contiguous.
+
+config.decl @hrx2.shape.concat.ne0 : %value: index where [range(%value, 1, 16777216)]
+config.decl @hrx2.shape.concat.ne1 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.shape.concat.ne2 : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.shape.concat.src0_ne0 : %value: index where [range(%value, 0, 16777216)]
+config.decl @hrx2.shape.concat.src0_nb0 : %value: index where [range(%value, 0, 16777216)]
+config.decl @hrx2.shape.concat.src0_nb1 : %value: index where [range(%value, 0, 268435456)]
+config.decl @hrx2.shape.concat.src0_nb2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2.shape.concat.src1_nb0 : %value: index where [range(%value, 0, 16777216)]
+config.decl @hrx2.shape.concat.src1_nb1 : %value: index where [range(%value, 0, 268435456)]
+config.decl @hrx2.shape.concat.src1_nb2 : %value: index where [range(%value, 0, 1073741823)]
+config.decl @hrx2.tuning.concat.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+kernel.def export("hrx2_concat_f32_dim0") @hrx2_concat_f32_dim0() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %ne0 = config.get @hrx2.shape.concat.ne0 : index
+  %ne1 = config.get @hrx2.shape.concat.ne1 : index
+  %ne2 = config.get @hrx2.shape.concat.ne2 : index
+  %workgroup_size = config.get @hrx2.tuning.concat.workgroup_size : index
+  %rows = index.mul %ne0, %ne1 : index
+  %total = index.mul %rows, %ne2 : index
+  %rounding = index.add %workgroup_size, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %workgroups = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %ne0 = config.get @hrx2.shape.concat.ne0 : index
+  %ne1 = config.get @hrx2.shape.concat.ne1 : index
+  %ne2 = config.get @hrx2.shape.concat.ne2 : index
+  %s0_ne0 = config.get @hrx2.shape.concat.src0_ne0 : index
+  %s0_nb0 = config.get @hrx2.shape.concat.src0_nb0 : index
+  %s0_nb1 = config.get @hrx2.shape.concat.src0_nb1 : index
+  %s0_nb2 = config.get @hrx2.shape.concat.src0_nb2 : index
+  %s1_nb0 = config.get @hrx2.shape.concat.src1_nb0 : index
+  %s1_nb1 = config.get @hrx2.shape.concat.src1_nb1 : index
+  %s1_nb2 = config.get @hrx2.shape.concat.src1_nb2 : index
+  %workgroup_size = config.get @hrx2.tuning.concat.workgroup_size : index
+
+  %ne0_b = index.assume %ne0 [range(%ne0, 1, 16777216)] : index
+  %ne1_b = index.assume %ne1 [range(%ne1, 1, 1048576)] : index
+  %ne2_b = index.assume %ne2 [range(%ne2, 1, 1048576)] : index
+
+  %workgroup0 = kernel.workgroup.id<x> : index
+  %lane0 = kernel.workitem.id<x> : index
+  %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
+  %lin0 = index.mul %workgroup, %workgroup_size : index
+  %lin1 = index.add %lin0, %lane : index
+  %linear = index.assume %lin1 [range(%lin1, 0, 1073741823)] : index
+
+  %rows0 = index.mul %ne0_b, %ne1_b : index
+  %rows = index.assume %rows0 [range(%rows0, 1, 1073741823)] : index
+  %total0 = index.mul %rows, %ne2_b : index
+  %total = index.assume %total0 [range(%total0, 1, 1073741824)] : index
+  %in_bounds = index.cmp ult, %linear, %total : index
+
+  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
+  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
+  %dst_global = buffer.assume.memory_space<global> %dst : buffer
+  %src0_na, %src1_na, %dst_na = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
+  %src0_view = buffer.view %src0_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %src1_view = buffer.view %src1_na[%base] : buffer -> view<1073741824xf32, #dense>
+  %dst_view = buffer.view %dst_na[%base] : buffer -> view<1073741824xf32, #dense>
+
+  scf.if %in_bounds {
+    %i2 = index.div %linear, %rows : index
+    %within = index.rem %linear, %rows : index
+    %i1 = index.div %within, %ne0_b : index
+    %i0 = index.rem %within, %ne0_b : index
+
+    %from_src0 = index.cmp ult, %i0, %s0_ne0 : index
+    %value = scf.if %from_src0 -> (f32) {
+      %a0 = index.mul %i0, %s0_nb0 : index
+      %a1 = index.mul %i1, %s0_nb1 : index
+      %a2 = index.mul %i2, %s0_nb2 : index
+      %a01 = index.add %a0, %a1 : index
+      %a012 = index.add %a01, %a2 : index
+      %ai = index.assume %a012 [range(%a012, 0, 1073741823)] : index
+      %v = view.load %src0_view[%ai] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    } else {
+      %j0 = index.sub %i0, %s0_ne0 : index
+      %b0 = index.mul %j0, %s1_nb0 : index
+      %b1 = index.mul %i1, %s1_nb1 : index
+      %b2 = index.mul %i2, %s1_nb2 : index
+      %b01 = index.add %b0, %b1 : index
+      %b012 = index.add %b01, %b2 : index
+      %bi = index.assume %b012 [range(%b012, 0, 1073741823)] : index
+      %v = view.load %src1_view[%bi] : view<1073741824xf32, #dense> -> f32
+      scf.yield %v : f32
+    }
+    view.store %value, %dst_view[%linear] : f32, view<1073741824xf32, #dense>
+  }
+  kernel.return
+}

@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "concat_f32",
+  "op": "CONCAT",
+  "sources": {
+    "concat_f32": {
+      "path": "kernels/concat_f32.loom",
+      "sha256": "e8d3b0ae72651cd5f20a535f92aafcab8c8cbfa726125f722c320d3fa494f864"
+    }
+  },
+  "artifacts": {
+    "concat_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "concat_f32",
+      "root_symbol": "@hrx2_concat_f32_dim0",
+      "path": "artifacts/concat_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

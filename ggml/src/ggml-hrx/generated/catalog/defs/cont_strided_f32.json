@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "cont_strided_f32",
+  "op": "CONT",
+  "sources": {
+    "cont_strided_f32": {
+      "path": "kernels/cont_strided_f32.loom",
+      "sha256": "012d08abd43e726feb770f256b283b7779ec389fea694c517ea7e0f1682ab9aa"
+    }
+  },
+  "artifacts": {
+    "cont_strided_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "cont_strided_f32",
+      "root_symbol": "@hrx2_cont_strided_f32",
+      "path": "artifacts/cont_strided_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

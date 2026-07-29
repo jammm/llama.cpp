@@ -1,0 +1,108 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "mul_mat_id_q4_k_f32",
+  "op": "MUL_MAT_ID",
+  "sources": {
+    "mul_mat_id_q4_k_f32_mmq": {
+      "path": "kernels/mul_mat_id_q4_k_f32_mmq.loom",
+      "sha256": "e5fcaad7ec8e505a9bb76aca42a9169bd4182c694e506b6a69b179b23ff623b5"
+    },
+    "quant_act_q8": {
+      "path": "kernels/quant_act_q8.loom",
+      "sha256": "0837d220d0b322713a50e94604de4640154a9b24dd83970e1a584e0373389f06"
+    },
+    "mul_mat_id_q4_k_f32_mmq_pre": {
+      "path": "kernels/mul_mat_id_q4_k_f32_mmq_pre.loom",
+      "sha256": "c778862c285e2b0a7679e44453469eab761a100f29ca7086f36025fb9dbf6298"
+    },
+    "mmid_table": {
+      "path": "kernels/mmid_table.loom",
+      "sha256": "ee4a50cc869124454fd3d95168233ab19a613f41284432ec835345ccccccca8a"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_pre": {
+      "path": "kernels/mul_mat_id_q4_k_f32_mmqt_pre.loom",
+      "sha256": "c5a76de530f99e3e9ed3a399970980b6bbd74b8e6c843123c5adf3b30b1059e3"
+    },
+    "mul_mat_id_q4_k_f32_mmqt": {
+      "path": "kernels/mul_mat_id_q4_k_f32_mmqt.loom",
+      "sha256": "58a108e4e233ae0f9ab6f43a76b2498320bbb4338777900315b77a87e38eb0ee"
+    },
+    "mmid_table_decode_onewg": {
+      "path": "kernels/mmid_table_decode_onewg.loom",
+      "sha256": "4be9ec7db8b0e54337f2282a143bfff1369c09d012c35e3e38fb9e47854b641c"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_pre_swiglu": {
+      "path": "kernels/mul_mat_id_q4_k_f32_mmqt_pre_swiglu.loom",
+      "sha256": "7636b577ac96d83c4dbc6b5fa7763f04d0425607d77913fce42551e8e3db6f9c"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact": {
+      "path": "kernels/mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact.loom",
+      "sha256": "687263bb34aea6a73afabfd8c5cf2ae1f35c091a333bb1f0b629d70708e56356"
+    }
+  },
+  "artifacts": {
+    "mul_mat_id_q4_k_f32_mmq_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_id_q4_k_f32_mmq",
+      "root_symbol": "@hrx2_mul_mat_id_q4_k_f32_mmq_static",
+      "path": "artifacts/mul_mat_id_q4_k_f32_mmq_loombc.loombc",
+      "storage": "embedded"
+    },
+    "quant_act_q8_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "quant_act_q8",
+      "root_symbol": "@hrx2_quant_act_q8",
+      "path": "artifacts/quant_act_q8_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_id_q4_k_f32_mmq_pre_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_id_q4_k_f32_mmq_pre",
+      "root_symbol": "@hrx2_mul_mat_id_q4_k_f32_mmq_static",
+      "path": "artifacts/mul_mat_id_q4_k_f32_mmq_pre_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mmid_table_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mmid_table",
+      "root_symbol": "@hrx2_mmid_table",
+      "path": "artifacts/mmid_table_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_pre_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_id_q4_k_f32_mmqt_pre",
+      "root_symbol": "@hrx2_mul_mat_id_q4_k_f32_mmqt_static",
+      "path": "artifacts/mul_mat_id_q4_k_f32_mmqt_pre_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_id_q4_k_f32_mmqt",
+      "root_symbol": "@hrx2_mul_mat_id_q4_k_f32_mmqt_static",
+      "path": "artifacts/mul_mat_id_q4_k_f32_mmqt_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mmid_table_decode_onewg_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mmid_table_decode_onewg",
+      "root_symbol": "@hrx2_mmid_table_decode_onewg",
+      "path": "artifacts/mmid_table_decode_onewg_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_id_q4_k_f32_mmqt_pre_swiglu",
+      "root_symbol": "@hrx2_mul_mat_id_q4_k_f32_mmqt_swiglu_static",
+      "path": "artifacts/mul_mat_id_q4_k_f32_mmqt_pre_swiglu_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact",
+      "root_symbol": "@hrx2_mul_mat_id_q4_k_f32_mmqt_swiglu_q5_down_qact",
+      "path": "artifacts/mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

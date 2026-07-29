@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "sum_slices_f32",
+  "op": "ADD",
+  "sources": {
+    "sum_slices_f32": {
+      "path": "kernels/sum_slices_f32.loom",
+      "sha256": "a42fd90597489020861307be27e3b92bba1f7719c12340f38d9040c4a06250de"
+    }
+  },
+  "artifacts": {
+    "sum_slices_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "sum_slices_f32",
+      "root_symbol": "@hrx2_sum_slices_f32",
+      "path": "artifacts/sum_slices_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

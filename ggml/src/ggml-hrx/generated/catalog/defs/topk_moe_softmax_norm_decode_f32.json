@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "topk_moe_softmax_norm_decode_f32",
+  "op": "DIV",
+  "sources": {
+    "topk_moe_softmax_norm_decode_f32": {
+      "path": "kernels/topk_moe_softmax_norm_decode.loom",
+      "sha256": "20c3c2f6bc4b12bbbe74322402fd7d16e6019068294f33ce102c7b48197ab243"
+    }
+  },
+  "artifacts": {
+    "topk_moe_softmax_norm_decode_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "topk_moe_softmax_norm_decode_f32",
+      "root_symbol": "@hrx2_topk_moe_softmax_norm_decode_f32",
+      "path": "artifacts/topk_moe_softmax_norm_decode_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

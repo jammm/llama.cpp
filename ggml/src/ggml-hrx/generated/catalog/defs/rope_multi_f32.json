@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "rope_multi_f32",
+  "op": "ROPE",
+  "sources": {
+    "rope_multi_f32": {
+      "path": "kernels/rope_multi_f32.loom",
+      "sha256": "1f0f83c897c6c998d3ae05b26858ba0a248a837ab45924effa5ac1720e2844dd"
+    }
+  },
+  "artifacts": {
+    "rope_multi_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "rope_multi_f32",
+      "root_symbol": "@hrx2_rope_multi_f32",
+      "path": "artifacts/rope_multi_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

@@ -45,6 +45,9 @@
 #ifdef GGML_USE_VULKAN
 #include "ggml-vulkan.h"
 #endif
+#ifdef GGML_USE_HRX
+#include "ggml-hrx.h"
+#endif
 
 #ifdef GGML_USE_WEBGPU
 #include "ggml-webgpu.h"
@@ -118,6 +121,9 @@ struct ggml_backend_registry {
 #endif
 #ifdef GGML_USE_METAL
         register_backend(ggml_backend_metal_reg());
+#endif
+#ifdef GGML_USE_HRX
+        register_backend(ggml_backend_hrx_reg());
 #endif
 #ifdef GGML_USE_SYCL
         register_backend(ggml_backend_sycl_reg());

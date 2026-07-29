@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "ssm_conv_f32_chan",
+  "op": "SSM_CONV",
+  "sources": {
+    "ssm_conv_f32_chan": {
+      "path": "kernels/ssm_conv_f32_chan.loom",
+      "sha256": "9bbb5d3554fb256789e5db7b8108b6c5b374b254016025df62290ada99252a23"
+    }
+  },
+  "artifacts": {
+    "ssm_conv_f32_chan_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "ssm_conv_f32_chan",
+      "root_symbol": "@hrx2_ssm_conv_f32_chan",
+      "path": "artifacts/ssm_conv_f32_chan_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

@@ -307,3 +307,8 @@ if (TARGET gguf-model-data)
     target_link_libraries(test-export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(test-export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+if (GGML_HRX)
+    llama_build_and_test(test-backend-hrx.cpp)
+    target_include_directories(test-backend-hrx PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-hrx)
+endif()

@@ -1,0 +1,97 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "mul_mat_q8_0_f32_tiled",
+  "op": "MUL_MAT",
+  "sources": {
+    "mul_mat_q8_0_tiled": {
+      "path": "kernels/mul_mat_q8_0_tiled.loom",
+      "sha256": "39908fbb8d4a06b286e2ce7c9d0dce333ffaa0f4d953c0efe979f56a2ac48498"
+    },
+    "quant_act_q8": {
+      "path": "kernels/quant_act_q8.loom",
+      "sha256": "0837d220d0b322713a50e94604de4640154a9b24dd83970e1a584e0373389f06"
+    },
+    "mul_mat_q8_0_tiled_r2": {
+      "path": "kernels/mul_mat_q8_0_tiled_r2.loom",
+      "sha256": "7af28a02ac748192c036ec1b7c2c25aec6fae3cdfb10ca4970429c3725695544"
+    },
+    "mul_mat_q8_0_wmmai8": {
+      "path": "kernels/mul_mat_q8_0_wmmai8.loom",
+      "sha256": "a2ec629323c02b43a106063dafa81926c7dd7ec76d6749e8361cb4cf113ca35e"
+    },
+    "mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue": {
+      "path": "kernels/mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue.loom",
+      "sha256": "ef22af3ee4e3b0d539f7556a936f017bd44a54879fd01ef747bb66e300dfccb2"
+    },
+    "mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue": {
+      "path": "kernels/mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue.loom",
+      "sha256": "cd699be347bb150006ec33eefe55f0def23833b3845b4339b36bf0318c46850d"
+    },
+    "gdn_rms_side_scale_prepass": {
+      "path": "kernels/gdn_rms_side_scale_prepass.loom",
+      "sha256": "baf0811f678af5338cf336236821e3cb9e1c4c087e48626772d946d79e57dd99"
+    },
+    "mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue": {
+      "path": "kernels/mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue.loom",
+      "sha256": "1e866fec52f956d45734fe5bdb7d250f8f265f0aadb64b112b142f17163ceea7"
+    }
+  },
+  "artifacts": {
+    "mul_mat_q8_0_tiled_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_q8_0_tiled",
+      "root_symbol": "@hrx2_mul_mat_q8_0_f32_pre256x32x512r1",
+      "path": "artifacts/mul_mat_q8_0_tiled_loombc.loombc",
+      "storage": "embedded"
+    },
+    "quant_act_q8_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "quant_act_q8",
+      "root_symbol": "@hrx2_quant_act_q8",
+      "path": "artifacts/quant_act_q8_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_q8_0_tiled_r2_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_q8_0_tiled_r2",
+      "root_symbol": "@hrx2_mul_mat_q8_0_f32_pre512x32x512r2",
+      "path": "artifacts/mul_mat_q8_0_tiled_r2_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_q8_0_wmmai8_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_q8_0_wmmai8",
+      "root_symbol": "@hrx2_mul_mat_q8_0_f32_wmmai8_64x64x64",
+      "path": "artifacts/mul_mat_q8_0_wmmai8_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue",
+      "root_symbol": "@hrx2_mul_mat_q8_0_f32_wmmai8_gdn_silu_mul_epilogue",
+      "path": "artifacts/mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue",
+      "root_symbol": "@hrx2_mul_mat_q8_0_f32_wmmai8_gdn_rms_side_epilogue",
+      "path": "artifacts/mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue_loombc.loombc",
+      "storage": "embedded"
+    },
+    "gdn_rms_side_scale_prepass_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "gdn_rms_side_scale_prepass",
+      "root_symbol": "@hrx2_gdn_rms_side_scales_f32",
+      "path": "artifacts/gdn_rms_side_scale_prepass_loombc.loombc",
+      "storage": "embedded"
+    },
+    "mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue",
+      "root_symbol": "@hrx2_mul_mat_q8_0_f32_wmmai8_shared_expert_terminal_epilogue",
+      "path": "artifacts/mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

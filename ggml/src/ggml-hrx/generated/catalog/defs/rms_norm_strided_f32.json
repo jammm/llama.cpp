@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "rms_norm_strided_f32",
+  "op": "RMS_NORM",
+  "sources": {
+    "norm_strided_f32": {
+      "path": "kernels/norm_strided_f32.loom",
+      "sha256": "fa6afd5a1053aa2f1fd6d09e1272ff340e8489ec608fadccb2436fe5c00fd42b"
+    }
+  },
+  "artifacts": {
+    "norm_strided_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "norm_strided_f32",
+      "root_symbol": "@hrx2_rms_norm_strided_f32",
+      "path": "artifacts/norm_strided_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

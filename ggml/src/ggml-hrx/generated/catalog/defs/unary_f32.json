@@ -1,0 +1,48 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "unary_f32",
+  "op": "SILU",
+  "sources": {
+    "unary_f32": {
+      "path": "kernels/unary_f32.loom",
+      "sha256": "3d8d0b07ab6c388458b0d2c87d1a47e5a25112a3a32fd946ad75e50493d93b64"
+    }
+  },
+  "artifacts": {
+    "unary_silu_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "unary_f32",
+      "root_symbol": "@hrx2_silu_f32",
+      "path": "artifacts/unary_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "unary_sigmoid_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "unary_f32",
+      "root_symbol": "@hrx2_sigmoid_f32",
+      "path": "artifacts/unary_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "unary_softplus_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "unary_f32",
+      "root_symbol": "@hrx2_softplus_f32",
+      "path": "artifacts/unary_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "unary_exp_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "unary_f32",
+      "root_symbol": "@hrx2_exp_f32",
+      "path": "artifacts/unary_f32_loombc.loombc",
+      "storage": "embedded"
+    },
+    "unary_neg_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "unary_f32",
+      "root_symbol": "@hrx2_neg_f32",
+      "path": "artifacts/unary_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

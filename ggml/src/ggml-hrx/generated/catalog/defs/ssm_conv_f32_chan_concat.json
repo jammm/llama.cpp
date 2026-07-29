@@ -1,0 +1,42 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "ssm_conv_f32_chan_concat",
+  "op": "SSM_CONV",
+  "sources": {
+    "ssm_conv_f32_chan_concat": {
+      "path": "kernels/ssm_conv_f32_chan_concat.loom",
+      "sha256": "6b58e833461dd1a732e865797628a822e175008a0f919c396015443b5a097efa"
+    },
+    "ssm_conv_f32_state_cache_decode": {
+      "path": "kernels/ssm_conv_f32_state_cache_decode.loom",
+      "sha256": "5edea2180280cfa4e7f7f8aed5b3ea01852ec0c160c6b901a4dd22f41f4f7764"
+    },
+    "ssm_conv_f32_chan_concat_silu_regblock_wg1024": {
+      "path": "kernels/ssm_conv_f32_chan_concat_silu_regblock_wg1024.loom",
+      "sha256": "88569ee576c70959542c221da1b7a0dafe4748b7a8d3dff010d039df9e507645"
+    }
+  },
+  "artifacts": {
+    "ssm_conv_f32_chan_concat_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "ssm_conv_f32_chan_concat",
+      "root_symbol": "@hrx2_ssm_conv_f32_chan_concat",
+      "path": "artifacts/ssm_conv_f32_chan_concat_loombc.loombc",
+      "storage": "embedded"
+    },
+    "ssm_conv_f32_state_cache_decode_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "ssm_conv_f32_state_cache_decode",
+      "root_symbol": "@hrx2_ssm_conv_f32_state_cache_decode",
+      "path": "artifacts/ssm_conv_f32_state_cache_decode_loombc.loombc",
+      "storage": "embedded"
+    },
+    "ssm_conv_f32_chan_concat_silu_regblock_wg1024_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "ssm_conv_f32_chan_concat_silu_regblock_wg1024",
+      "root_symbol": "@hrx2_ssm_conv_f32_chan_concat_silu_regblock_wg1024",
+      "path": "artifacts/ssm_conv_f32_chan_concat_silu_regblock_wg1024_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

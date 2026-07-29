@@ -1,0 +1,31 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "concat_window_tail",
+  "op": "CONCAT",
+  "sources": {
+    "concat_window_tail": {
+      "path": "kernels/concat_window_tail.loom",
+      "sha256": "eb1b34113be1de5193d082c1a628a18d5fbc4189d36ec498823735bb2ea852a8"
+    },
+    "concat_f32_dim0_tiled": {
+      "path": "kernels/concat_f32_dim0_tiled.loom",
+      "sha256": "af6ae1a24984d9474815339177e292ce33a542fee304295556b824c4d412b564"
+    }
+  },
+  "artifacts": {
+    "concat_window_tail_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "concat_window_tail",
+      "root_symbol": "@hrx2_concat_window_tail",
+      "path": "artifacts/concat_window_tail_loombc.loombc",
+      "storage": "embedded"
+    },
+    "concat_f32_dim0_tiled_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "concat_f32_dim0_tiled",
+      "root_symbol": "@hrx2_concat_f32_dim0_tiled",
+      "path": "artifacts/concat_f32_dim0_tiled_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

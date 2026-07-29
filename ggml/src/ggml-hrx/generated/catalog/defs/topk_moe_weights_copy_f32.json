@@ -1,0 +1,20 @@
+{
+  "schema": "ggml-hrx-kernel-def-v1",
+  "family": "topk_moe_weights_copy_f32",
+  "op": "DIV",
+  "sources": {
+    "topk_moe_weights_copy_f32": {
+      "path": "kernels/topk_moe_softmax_norm.loom",
+      "sha256": "8a37b96b269e90c105fdc91ceb57d6e8ab7ce35ebf8f04014238c39edcd46cf5"
+    }
+  },
+  "artifacts": {
+    "topk_moe_weights_copy_f32_loombc": {
+      "format": "loom-bytecode",
+      "source_id": "topk_moe_weights_copy_f32",
+      "root_symbol": "@hrx2_topk_moe_weights_copy_f32",
+      "path": "artifacts/topk_moe_weights_copy_f32_loombc.loombc",
+      "storage": "embedded"
+    }
+  }
+}

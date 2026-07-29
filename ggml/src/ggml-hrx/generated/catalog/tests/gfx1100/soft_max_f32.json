@@ -1,0 +1,33 @@
+{
+  "schema": "ggml-hrx-test-schedule-v1",
+  "target_key": "gfx1100",
+  "family": "soft_max_f32",
+  "cases": [
+    {
+      "id": "soft_max_f32_soft_max_f32_n128_r1_wg128_smoke_ncols128_nrows1",
+      "op": "SOFT_MAX",
+      "scenario": "soft_max",
+      "expected_route_id": "soft_max_f32_n128_r1_wg128",
+      "schedule": {
+        "source": "atlas-test",
+        "scenario": "smoke"
+      },
+      "supports": {
+        "src0_type": "F32",
+        "src1_type": "none",
+        "dst_type": "F32",
+        "mask": "none",
+        "max_bias": "0",
+        "sinks": "none",
+        "layout": "contiguous"
+      },
+      "shape": {
+        "ncols": 128,
+        "nrows": 1
+      },
+      "tolerance": 0.0001,
+      "repeat": 1
+    }
+  ],
+  "schedule_file": "tests/gfx1100/soft_max_f32.json"
+}
