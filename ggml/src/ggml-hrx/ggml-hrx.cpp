@@ -80,7 +80,6 @@ struct ggml_backend_hrx_options {
 };
 
 struct ggml_backend_hrx_recurrent_cache_layer {
-    int layer = -1;
     int cache_r_get_index = -1;
     int concat_index = -1;
     int cache_r_write_index = -1;
@@ -89,14 +88,9 @@ struct ggml_backend_hrx_recurrent_cache_layer {
     int silu_index = -1;
     int gated_delta_net_index = -1;
     int cache_s_write_index = -1;
-    const ggml_tensor * cache_r_get = nullptr;
-    const ggml_tensor * concat = nullptr;
-    const ggml_tensor * cache_r_write = nullptr;
-    const ggml_tensor * cache_s_get = nullptr;
     const ggml_tensor * ssm_conv = nullptr;
     const ggml_tensor * silu = nullptr;
     const ggml_tensor * gated_delta_net = nullptr;
-    const ggml_tensor * cache_s_write = nullptr;
     const ggml_tensor * cache_r_owner = nullptr;
     const ggml_tensor * cache_s_owner = nullptr;
     const ggml_tensor * conv_x = nullptr;
@@ -116,7 +110,6 @@ struct ggml_backend_hrx_recurrent_cache_plan {
 };
 
 struct ggml_backend_hrx_gdn_qk_scale_layer {
-    int layer = -1;
     int q_norm_index = -1;
     int k_norm_index = -1;
     int gated_delta_net_index = -1;
@@ -138,7 +131,6 @@ struct ggml_backend_hrx_gdn_qk_scale_plan {
 };
 
 struct ggml_backend_hrx_ssm_conv_silu_layer {
-    int layer = -1;
     int ssm_conv_index = -1;
     int silu_index = -1;
     bool x_dst_alias = false;
@@ -212,14 +204,12 @@ struct ggml_backend_hrx_staging_arena {
 };
 
 struct ggml_backend_hrx_moe_router_tail_layer_plan {
-    int layer = -1;
     int down_index = -1;
     int mul_index = -1;
-    std::array<int, 7> add_indices = {};
+    std::vector<int> add_indices;
     const ggml_tensor * down = nullptr;
     const ggml_tensor * mul = nullptr;
-    std::array<const ggml_tensor *, 7> adds = {};
-    const ggml_tensor * selected = nullptr;
+    std::vector<const ggml_tensor *> adds;
     const ggml_tensor * dst = nullptr;
     const ggml_tensor * router_source = nullptr;
     int64_t ntokens = 0;
@@ -233,20 +223,15 @@ struct ggml_backend_hrx_moe_router_tail_graph_plan {
     const ggml_backend_hrx_catalog * catalog = nullptr;
     bool examined = false;
     bool ready = false;
-    int64_t ntokens = 0;
-    std::array<ggml_backend_hrx_moe_router_tail_layer_plan, 40> layers = {};
-    // Exactly ADD0..ADD5 from each layer. The 40 router MULs are suppressed
-    // separately as fused producers; the terminal ADD6 remains the routed node.
+    std::vector<ggml_backend_hrx_moe_router_tail_layer_plan> layers;
+    // Every non-terminal ADD is replaced by the terminal ADD. The router MULs
+    // are suppressed separately as fused producers.
     std::vector<uint8_t> add_skip_mask;
 };
 
 struct ggml_backend_hrx_terminal_qact_layer_plan {
-    int layer = -1;
-    int glu_index = -1;
-    int down_index = -1;
     const ggml_tensor * glu = nullptr;
     const ggml_tensor * down = nullptr;
-    const ggml_tensor * ids = nullptr;
 };
 
 struct ggml_backend_hrx_terminal_qact_graph_plan {
@@ -255,13 +240,10 @@ struct ggml_backend_hrx_terminal_qact_graph_plan {
     const ggml_backend_hrx_catalog * catalog = nullptr;
     bool examined = false;
     bool ready = false;
-    size_t layer_count = 0;
-    std::array<
-        ggml_backend_hrx_terminal_qact_layer_plan, 40> layers = {};
+    std::vector<ggml_backend_hrx_terminal_qact_layer_plan> layers;
 };
 
 struct ggml_backend_hrx_shared_expert_terminal_layer_plan {
-    int layer = -1;
     int down_index = -1;
     int raw_gate_index = -1;
     int sigmoid_index = -1;
@@ -281,21 +263,20 @@ struct ggml_backend_hrx_shared_expert_terminal_graph_plan {
     const ggml_backend_hrx_catalog * catalog = nullptr;
     bool examined = false;
     bool ready = false;
-    std::array<
-        ggml_backend_hrx_shared_expert_terminal_layer_plan, 40> layers = {};
+    std::vector<ggml_backend_hrx_shared_expert_terminal_layer_plan> layers;
     // Exactly the shared-down GEMM, scalar sigmoid, and broadcast MUL from
     // each layer. The raw scalar projection and terminal ADD remain scheduled.
     std::vector<uint8_t> skip_mask;
 };
 
 struct ggml_backend_hrx_gdn_rms_side_layer_plan {
-    int layer = -1;
     int gated_delta_net_index = -1;
     int rms_norm_index = -1;
     int side_index = -1;
     int q8_index = -1;
     int silu_index = -1;
     int terminal_index = -1;
+    const ggml_tensor * gated_delta_net = nullptr;
     const ggml_tensor * raw = nullptr;
     const ggml_tensor * rms_norm = nullptr;
     const ggml_tensor * norm_weight = nullptr;
@@ -311,10 +292,9 @@ struct ggml_backend_hrx_gdn_rms_side_graph_plan {
     const ggml_backend_hrx_catalog * catalog = nullptr;
     bool examined = false;
     bool ready = false;
-    std::array<
-        ggml_backend_hrx_gdn_rms_side_layer_plan, 30> layers = {};
+    std::vector<ggml_backend_hrx_gdn_rms_side_layer_plan> layers;
     // Exactly RMS_NORM, its weighted side materialization, Q8 GEMM, and SiLU
-    // for each of the thirty recurrent layers. The terminal MUL remains.
+    // for each admitted recurrent layer. The terminal MUL remains.
     std::vector<uint8_t> skip_mask;
 };
 
@@ -398,10 +378,9 @@ struct ggml_backend_hrx_device_context {
     // reuse the previous result instead of re-running the prepass.
     hrx_buffer_t quant_scratch = nullptr;
     size_t quant_scratch_capacity = 0;
-    // The cache key is graph-local and storage-based. Qwen's expert gate sees a
-    // full-span RESHAPE of attn_post_norm while the shared-expert gate later
-    // sees the owner tensor itself; pointer identity alone needlessly
-    // re-quantizes the same bytes.
+    // The cache key is graph-local and storage-based. A full-span view and its
+    // owner can feed consecutive consumers; pointer identity alone would
+    // needlessly re-quantize the same bytes.
     const ggml_tensor * quant_scratch_source = nullptr;
     const ggml_tensor * quant_scratch_source_owner = nullptr;
     hrx_buffer_t quant_scratch_source_buffer = nullptr;
@@ -2041,6 +2020,19 @@ static int64_t ggml_backend_hrx_tensor_row_count(const ggml_tensor * tensor) {
     return tensor ? tensor->ne[1] * tensor->ne[2] * tensor->ne[3] : 0;
 }
 
+static bool ggml_backend_hrx_shape_is(
+        const ggml_tensor * tensor,
+        int64_t ne0,
+        int64_t ne1,
+        int64_t ne2 = 1,
+        int64_t ne3 = 1) {
+    return tensor &&
+           tensor->ne[0] == ne0 &&
+           tensor->ne[1] == ne1 &&
+           tensor->ne[2] == ne2 &&
+           tensor->ne[3] == ne3;
+}
+
 static int64_t ggml_backend_hrx_tensor_row_stride_elements(const ggml_tensor * tensor) {
     return tensor && tensor->type == GGML_TYPE_F32 ? static_cast<int64_t>(tensor->nb[1] / sizeof(float)) : 0;
 }
@@ -2146,16 +2138,91 @@ static void ggml_backend_hrx_add_tensor_overlap_facts(
     }
 }
 
-static bool ggml_backend_hrx_request_matches_loaded_route(
+static const ggml_backend_hrx_catalog_route *
+ggml_backend_hrx_find_request_route(
         ggml_backend_hrx_device_context * device_context,
-        const ggml_backend_hrx_dispatch_request & request,
-        const char * family) {
-    if (!device_context || !device_context->reg_context || !device_context->reg_context->catalog) {
+        ggml_backend_hrx_dispatch_request & request) {
+    if (!device_context || !device_context->reg_context ||
+        !device_context->reg_context->catalog) {
+        return nullptr;
+    }
+    ggml_backend_hrx_add_tensor_overlap_facts(
+        &request.problem, request.tensors);
+    return ggml_backend_hrx_catalog_find_route(
+        *device_context->reg_context->catalog, request.problem);
+}
+
+static size_t ggml_backend_hrx_request_binding_count(
+        const ggml_backend_hrx_catalog_route & route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    size_t count = request.tensors.size();
+    for (const auto & prepass : route.prepasses) {
+        if (prepass.dst_index < 0) {
+            count += prepass.bytes_per_element != 0 ? 1 : 3;
+        }
+    }
+    return count;
+}
+
+static bool ggml_backend_hrx_route_matches_request_abi(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    if (!route ||
+        request.constants.size() % sizeof(uint32_t) != 0) {
         return false;
     }
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(&problem, request.tensors);
-    const auto * route = ggml_backend_hrx_catalog_find_route(*device_context->reg_context->catalog, problem);
+    const size_t binding_count =
+        ggml_backend_hrx_request_binding_count(*route, request);
+    return route->binding_count == binding_count &&
+           route->constant_byte_length == request.constants.size() &&
+           route->parameter_count ==
+               binding_count +
+                   request.constants.size() / sizeof(uint32_t);
+}
+
+static bool ggml_backend_hrx_route_satisfies_requested_supports(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    if (!route) {
+        return false;
+    }
+    for (const auto & required : route->supports) {
+        const auto provided =
+            request.problem.supports.find(required.first);
+        if (provided == request.problem.supports.end() ||
+            provided->second != required.second) {
+            return false;
+        }
+    }
+    const auto requested_fusion =
+        request.problem.supports.find("fusion");
+    if (requested_fusion != request.problem.supports.end()) {
+        const auto route_fusion = route->supports.find("fusion");
+        if (route_fusion == route->supports.end() ||
+            route_fusion->second != requested_fusion->second) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_route_matches_request(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    return route &&
+           route->op == request.problem.op &&
+           route->target_key == request.problem.target_key &&
+           ggml_backend_hrx_route_matches_request_abi(route, request) &&
+           ggml_backend_hrx_route_satisfies_requested_supports(
+               route, request);
+}
+
+static bool ggml_backend_hrx_request_matches_loaded_route(
+        ggml_backend_hrx_device_context * device_context,
+        ggml_backend_hrx_dispatch_request & request,
+        const char * family) {
+    const auto * route =
+        ggml_backend_hrx_find_request_route(device_context, request);
     return route && (!family || route->family == family);
 }
 
@@ -2292,7 +2359,7 @@ static bool ggml_backend_hrx_disjoint_storage_spans(
 // True only for a zero-offset metadata/view chain in which every view covers
 // the target's complete physical span. This is deliberately narrower than the
 // general source-chain helper: the fused epilogue relies on flat-index identity
-// between [4096,512] GEMM output and its [128,16384] reshape.
+// between a GEMM output and its reshape.
 static bool ggml_backend_hrx_zero_offset_full_span_chain_reaches(
         const ggml_tensor * tensor,
         const ggml_tensor * target) {
@@ -2301,7 +2368,7 @@ static bool ggml_backend_hrx_zero_offset_full_span_chain_reaches(
     }
     const size_t target_bytes = ggml_nbytes(target);
     const ggml_tensor * cur = tensor;
-    for (int depth = 0; cur && depth < 16; ++depth) {
+    while (cur) {
         if (cur == target) {
             return true;
         }
@@ -2334,7 +2401,7 @@ static bool ggml_backend_hrx_metadata_chain_reaches(
         return false;
     }
     const ggml_tensor * cur = tensor;
-    for (int depth = 0; cur && depth < 16; ++depth) {
+    while (cur) {
         if (cur == target) {
             return true;
         }
@@ -2354,21 +2421,458 @@ static bool ggml_backend_hrx_metadata_chain_reaches(
     return false;
 }
 
-static bool ggml_backend_hrx_match_gdn_q8_silu_mul(
-        ggml_backend_hrx_device_context * device_context,
+enum class ggml_backend_hrx_direct_fusion_kind : uint8_t {
+    none,
+    rms_norm_mul,
+    add_rms_norm_mul,
+    cont_set_rows,
+    rope_set_rows,
+    mul_mat_q4_k_swiglu,
+    mul_mat_f16_cont,
+    softmax_kqv,
+};
+
+struct ggml_backend_hrx_direct_fusion_match {
+    ggml_backend_hrx_direct_fusion_kind kind =
+        ggml_backend_hrx_direct_fusion_kind::none;
+    std::array<const ggml_tensor *, 2> producers = {};
+    size_t producer_count = 0;
+    const char * family = nullptr;
+};
+
+static int ggml_backend_hrx_graph_node_index(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * tensor);
+
+static int ggml_backend_hrx_next_compute_node(
+        const ggml_cgraph * cgraph,
+        int after) {
+    if (!cgraph) {
+        return -1;
+    }
+    for (int i = after + 1; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (node &&
+            !ggml_backend_hrx_is_metadata_op(node) &&
+            !ggml_backend_hrx_is_empty_op(node)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int ggml_backend_hrx_previous_compute_node(
+        const ggml_cgraph * cgraph,
+        int before) {
+    if (!cgraph) {
+        return -1;
+    }
+    for (int i = before - 1; i >= 0; --i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (node &&
+            !ggml_backend_hrx_is_metadata_op(node) &&
+            !ggml_backend_hrx_is_empty_op(node)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int32_t ggml_backend_hrx_graph_use_count(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * tensor) {
+    if (!cgraph || !tensor) {
+        return -1;
+    }
+    const size_t position =
+        ggml_hash_find(&cgraph->visited_hash_set, tensor);
+    if (position == GGML_HASHSET_FULL ||
+        !ggml_bitset_get(cgraph->visited_hash_set.used, position)) {
+        return -1;
+    }
+    return cgraph->use_counts[position];
+}
+
+static bool ggml_backend_hrx_graph_value_is_output(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * value) {
+    if (!cgraph || !value) {
+        return true;
+    }
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (node && (node->flags & GGML_TENSOR_FLAG_OUTPUT) &&
+            ggml_backend_hrx_metadata_chain_reaches(node, value)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ggml_backend_hrx_graph_has_single_compute_consumer(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * value,
+        const ggml_tensor * expected) {
+    if (!cgraph || !value || !expected) {
+        return false;
+    }
+    if (ggml_backend_hrx_graph_use_count(cgraph, value) == 1) {
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            const ggml_tensor * cur = expected->src[s];
+            while (cur) {
+                if (cur == value) {
+                    return true;
+                }
+                if (!ggml_backend_hrx_is_metadata_op(cur) ||
+                    ggml_backend_hrx_graph_use_count(cgraph, cur) != 1) {
+                    break;
+                }
+                cur = cur->src[0] ? cur->src[0] : cur->view_src;
+            }
+        }
+        return false;
+    }
+
+    // Preserve the exact consumer-set semantics for uncommon branched values.
+    bool found = false;
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (!node || node == value ||
+            ggml_backend_hrx_is_metadata_op(node) ||
+            ggml_backend_hrx_is_empty_op(node)) {
+            continue;
+        }
+        bool consumes = false;
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            consumes =
+                consumes ||
+                ggml_backend_hrx_metadata_chain_reaches(
+                    node->src[s], value);
+        }
+        if (!consumes) {
+            continue;
+        }
+        if (node != expected || found) {
+            return false;
+        }
+        found = true;
+    }
+    return found;
+}
+
+static bool ggml_backend_hrx_graph_value_is_private_to_consumer(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * value,
+        const ggml_tensor * expected) {
+    if (!cgraph || !value || !expected) {
+        return false;
+    }
+    if (ggml_backend_hrx_graph_use_count(cgraph, value) == 1) {
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            const ggml_tensor * cur = expected->src[s];
+            while (cur) {
+                if (cur->flags & GGML_TENSOR_FLAG_OUTPUT) {
+                    break;
+                }
+                if (cur == value) {
+                    return true;
+                }
+                if (!ggml_backend_hrx_is_metadata_op(cur) ||
+                    ggml_backend_hrx_graph_use_count(cgraph, cur) != 1) {
+                    break;
+                }
+                cur = cur->src[0] ? cur->src[0] : cur->view_src;
+            }
+        }
+        return false;
+    }
+    return !ggml_backend_hrx_graph_value_is_output(cgraph, value) &&
+           ggml_backend_hrx_graph_has_single_compute_consumer(
+               cgraph, value, expected);
+}
+
+static bool ggml_backend_hrx_storage_spans_exact_or_disjoint(
+        std::initializer_list<const ggml_tensor *> tensors) {
+    for (auto lhs = tensors.begin(); lhs != tensors.end(); ++lhs) {
+        for (auto rhs = std::next(lhs); rhs != tensors.end(); ++rhs) {
+            if (!ggml_backend_hrx_same_storage_span(*lhs, *rhs) &&
+                !ggml_backend_hrx_disjoint_storage_spans(*lhs, *rhs)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_all_storage_spans_disjoint(
+        std::initializer_list<const ggml_tensor *> tensors) {
+    for (auto lhs = tensors.begin(); lhs != tensors.end(); ++lhs) {
+        for (auto rhs = std::next(lhs); rhs != tensors.end(); ++rhs) {
+            if (!ggml_backend_hrx_disjoint_storage_spans(*lhs, *rhs)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_direct_fusion_candidate(
+        const ggml_tensor * node) {
+    if (!node) {
+        return false;
+    }
+    if (node->op == GGML_OP_MUL && node->src[0] &&
+        node->src[0]->op == GGML_OP_RMS_NORM) {
+        return true;
+    }
+    if (node->op == GGML_OP_SET_ROWS && node->src[0]) {
+        return ggml_backend_hrx_zero_offset_source_chain_target(
+                   node->src[0], GGML_OP_CONT) ||
+               ggml_backend_hrx_zero_offset_source_chain_target(
+                   node->src[0], GGML_OP_ROPE);
+    }
+    if (node->op == GGML_OP_GLU && node->src[0] && node->src[1]) {
+        return node->src[0]->op == GGML_OP_MUL_MAT &&
+               node->src[1]->op == GGML_OP_MUL_MAT;
+    }
+    return node->op == GGML_OP_CONT && node->src[0] &&
+           node->src[0]->op == GGML_OP_PERMUTE &&
+           node->src[0]->src[0] &&
+           node->src[0]->src[0]->op == GGML_OP_MUL_MAT;
+}
+
+static bool ggml_backend_hrx_direct_fusion_family(
+        const ggml_backend_hrx_catalog_route * route) {
+    if (!route) {
+        return false;
+    }
+    return route->family == "rms_norm_mul_f32" ||
+           route->family == "add_rms_norm_mul_f32" ||
+           route->family == "cont_set_rows_f32" ||
+           route->family == "rope_set_rows_f32" ||
+           route->family == "mul_mat_q4_k_swiglu_f32" ||
+           route->family == "mul_mat_f16_f32_batched_cont" ||
+           route->family == "softmax_kqv_f32_f16";
+}
+
+static bool ggml_backend_hrx_match_direct_fusion_graph(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * terminal,
+        ggml_backend_hrx_direct_fusion_match * out_match,
+        int terminal_index) {
+    if (!cgraph || !terminal || !out_match) {
+        return false;
+    }
+    if (terminal_index < 0 ||
+        terminal_index >= cgraph->n_nodes ||
+        cgraph->nodes[terminal_index] != terminal) {
+        return false;
+    }
+
+    ggml_backend_hrx_direct_fusion_match match = {};
+    if (terminal->op == GGML_OP_MUL && terminal->src[0] &&
+        terminal->src[0]->op == GGML_OP_RMS_NORM &&
+        terminal->src[1]) {
+        const ggml_tensor * rms = terminal->src[0];
+        const ggml_tensor * raw = rms->src[0];
+        const int rms_index =
+            ggml_backend_hrx_previous_compute_node(
+                cgraph, terminal_index);
+        if (!raw || rms_index < 0 ||
+            cgraph->nodes[rms_index] != rms ||
+            !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, rms, terminal)) {
+            return false;
+        }
+        if (raw->op == GGML_OP_ADD && raw->src[0] && raw->src[1]) {
+            const int add_index =
+                ggml_backend_hrx_previous_compute_node(
+                    cgraph, rms_index);
+            if (add_index < 0 ||
+                cgraph->nodes[add_index] != raw ||
+                !ggml_backend_hrx_storage_spans_exact_or_disjoint({
+                    raw->src[0], raw->src[1], raw, terminal}) ||
+                !ggml_backend_hrx_all_storage_spans_disjoint({
+                    terminal->src[1], raw->src[0]}) ||
+                !ggml_backend_hrx_all_storage_spans_disjoint({
+                    terminal->src[1], raw->src[1]}) ||
+                !ggml_backend_hrx_all_storage_spans_disjoint({
+                    terminal->src[1], raw}) ||
+                !ggml_backend_hrx_all_storage_spans_disjoint({
+                    terminal->src[1], terminal}) ||
+                (ggml_backend_hrx_same_storage_span(raw, terminal) &&
+                 (ggml_backend_hrx_graph_value_is_output(cgraph, raw) ||
+                  ggml_backend_hrx_graph_use_count(cgraph, raw) != 1))) {
+                return false;
+            }
+            match.kind =
+                ggml_backend_hrx_direct_fusion_kind::add_rms_norm_mul;
+            match.producers = {raw, rms};
+            match.producer_count = 2;
+            match.family = "add_rms_norm_mul_f32";
+        } else {
+            if (!ggml_backend_hrx_all_storage_spans_disjoint({
+                    raw, terminal->src[1], terminal})) {
+                return false;
+            }
+            match.kind =
+                ggml_backend_hrx_direct_fusion_kind::rms_norm_mul;
+            match.producers = {rms, nullptr};
+            match.producer_count = 1;
+            match.family = "rms_norm_mul_f32";
+        }
+    } else if (terminal->op == GGML_OP_SET_ROWS &&
+               terminal->src[0] && terminal->src[1] &&
+               terminal->src[2]) {
+        const ggml_tensor * producer =
+            ggml_backend_hrx_zero_offset_source_chain_target(
+                terminal->src[0], GGML_OP_ROPE);
+        ggml_backend_hrx_direct_fusion_kind kind =
+            ggml_backend_hrx_direct_fusion_kind::rope_set_rows;
+        const char * family = "rope_set_rows_f32";
+        if (!producer) {
+            producer =
+                ggml_backend_hrx_zero_offset_source_chain_target(
+                    terminal->src[0], GGML_OP_CONT);
+            kind =
+                ggml_backend_hrx_direct_fusion_kind::cont_set_rows;
+            family = "cont_set_rows_f32";
+        }
+        const int producer_index =
+            ggml_backend_hrx_graph_node_index(cgraph, producer);
+        if (!producer || !producer->src[0] ||
+            producer_index < 0 ||
+            ggml_backend_hrx_next_compute_node(cgraph, producer_index) !=
+                terminal_index ||
+            !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, producer, terminal) ||
+            !ggml_backend_hrx_same_storage_span(
+                terminal, terminal->src[2])) {
+            return false;
+        }
+        if (kind == ggml_backend_hrx_direct_fusion_kind::cont_set_rows) {
+            if (!ggml_backend_hrx_all_storage_spans_disjoint({
+                    producer->src[0], terminal->src[1], terminal})) {
+                return false;
+            }
+        } else {
+            if (!producer->src[1] || !producer->src[2] ||
+                !ggml_backend_hrx_all_storage_spans_disjoint({
+                    producer->src[0], producer->src[1],
+                    producer->src[2], terminal->src[1], terminal})) {
+                return false;
+            }
+        }
+        match.kind = kind;
+        match.producers = {producer, nullptr};
+        match.producer_count = 1;
+        match.family = family;
+    } else if (terminal->op == GGML_OP_GLU &&
+               terminal->src[0] && terminal->src[1] &&
+               terminal->src[0]->op == GGML_OP_MUL_MAT &&
+               terminal->src[1]->op == GGML_OP_MUL_MAT) {
+        const ggml_tensor * first = terminal->src[0];
+        const ggml_tensor * second = terminal->src[1];
+        int first_index =
+            ggml_backend_hrx_graph_node_index(cgraph, first);
+        int second_index =
+            ggml_backend_hrx_graph_node_index(cgraph, second);
+        if (second_index < first_index) {
+            std::swap(first, second);
+            std::swap(first_index, second_index);
+        }
+        if (first_index < 0 || second_index < 0 ||
+            ggml_backend_hrx_next_compute_node(cgraph, first_index) !=
+                second_index ||
+            ggml_backend_hrx_next_compute_node(cgraph, second_index) !=
+                terminal_index ||
+            !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, first, terminal) ||
+            !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, second, terminal) ||
+            !first->src[0] || !first->src[1] ||
+            !second->src[0] || !second->src[1] ||
+            !ggml_backend_hrx_all_storage_spans_disjoint({
+                first->src[0], second->src[0],
+                first->src[1], terminal})) {
+            return false;
+        }
+        match.kind =
+            ggml_backend_hrx_direct_fusion_kind::mul_mat_q4_k_swiglu;
+        match.producers = {first, second};
+        match.producer_count = 2;
+        match.family = "mul_mat_q4_k_swiglu_f32";
+    } else if (terminal->op == GGML_OP_CONT &&
+               terminal->src[0] &&
+               terminal->src[0]->op == GGML_OP_PERMUTE &&
+               terminal->src[0]->src[0] &&
+               terminal->src[0]->src[0]->op == GGML_OP_MUL_MAT) {
+        const ggml_tensor * mul_mat = terminal->src[0]->src[0];
+        const ggml_tensor * softmax =
+            mul_mat->src[1] &&
+                    mul_mat->src[1]->op == GGML_OP_SOFT_MAX
+                ? mul_mat->src[1]
+                : nullptr;
+        const int mul_mat_index =
+            ggml_backend_hrx_graph_node_index(cgraph, mul_mat);
+        if (!mul_mat->src[0] || !mul_mat->src[1] ||
+            mul_mat_index < 0 ||
+            ggml_backend_hrx_next_compute_node(cgraph, mul_mat_index) !=
+                terminal_index ||
+            !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, mul_mat, terminal)) {
+            return false;
+        }
+        if (softmax) {
+            const int softmax_index =
+                ggml_backend_hrx_graph_node_index(
+                    cgraph, softmax);
+            if (!softmax->src[0] || !softmax->src[1] ||
+                softmax_index < 0 ||
+                ggml_backend_hrx_next_compute_node(
+                    cgraph, softmax_index) != mul_mat_index ||
+                !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                    cgraph, softmax, mul_mat) ||
+                !ggml_backend_hrx_all_storage_spans_disjoint({
+                    softmax->src[0], softmax->src[1],
+                    mul_mat->src[0], terminal})) {
+                return false;
+            }
+            match.kind =
+                ggml_backend_hrx_direct_fusion_kind::softmax_kqv;
+            match.producers = {softmax, mul_mat};
+            match.producer_count = 2;
+            match.family = "softmax_kqv_f32_f16";
+        } else {
+            if (!ggml_backend_hrx_all_storage_spans_disjoint({
+                    mul_mat->src[0], mul_mat->src[1], terminal})) {
+                return false;
+            }
+            match.kind =
+                ggml_backend_hrx_direct_fusion_kind::mul_mat_f16_cont;
+            match.producers = {mul_mat, nullptr};
+            match.producer_count = 1;
+            match.family = "mul_mat_f16_f32_batched_cont";
+        }
+    } else {
+        return false;
+    }
+
+    *out_match = match;
+    return match.kind != ggml_backend_hrx_direct_fusion_kind::none;
+}
+
+static bool ggml_backend_hrx_match_gdn_q8_silu_mul_chain(
         const ggml_tensor * node,
         ggml_backend_hrx_gdn_q8_silu_mul_match * out_match) {
-    if (!device_context || !device_context->current_graph || !node || !out_match ||
-        node->op != GGML_OP_MUL || !node->src[0] || !node->src[1] ||
+    if (!node || !out_match || node->op != GGML_OP_MUL ||
+        !node->src[0] || !node->src[1] ||
         node->type != GGML_TYPE_F32 ||
         node->src[0]->type != GGML_TYPE_F32 ||
         node->src[1]->type != GGML_TYPE_F32) {
         return false;
     }
 
-    // The measured graph is MUL(side, SILU(reshape(q8 GEMM))) and the MUL
-    // writes in place over side. Keep the operand orientation exact instead of
-    // admitting a commuted shape whose alias/lifetime contract was not traced.
     const ggml_tensor * side = node->src[0];
     const ggml_tensor * silu = node->src[1];
     if (silu->op != GGML_OP_UNARY ||
@@ -2386,61 +2890,21 @@ static bool ggml_backend_hrx_match_gdn_q8_silu_mul(
         return false;
     }
 
-    constexpr int64_t expected_bytes = 4096ll * 512ll * sizeof(float);
-    if (q8_gemm->src[0]->ne[0] != 2048 ||
-        q8_gemm->src[0]->ne[1] != 4096 ||
-        q8_gemm->src[0]->ne[2] != 1 ||
-        q8_gemm->src[0]->ne[3] != 1 ||
-        q8_gemm->src[1]->ne[0] != 2048 ||
-        q8_gemm->src[1]->ne[1] != 512 ||
-        q8_gemm->src[1]->ne[2] != 1 ||
-        q8_gemm->src[1]->ne[3] != 1 ||
-        q8_gemm->ne[0] != 4096 ||
-        q8_gemm->ne[1] != 512 ||
-        q8_gemm->ne[2] != 1 ||
-        q8_gemm->ne[3] != 1 ||
-        silu->src[0]->ne[0] != 128 ||
-        ggml_backend_hrx_tensor_row_count(silu->src[0]) != 16384 ||
-        silu->ne[0] != 128 ||
-        ggml_backend_hrx_tensor_row_count(silu) != 16384 ||
-        side->ne[0] != 128 ||
-        ggml_backend_hrx_tensor_row_count(side) != 16384 ||
-        node->ne[0] != 128 ||
-        ggml_backend_hrx_tensor_row_count(node) != 16384 ||
-        !ggml_are_same_shape(side, node) ||
-        !ggml_are_same_shape(silu, node) ||
-        q8_gemm->src[0]->nb[1] != 2176 ||
-        q8_gemm->src[1]->nb[1] != 2048 * sizeof(float) ||
-        q8_gemm->nb[1] != 4096 * sizeof(float) ||
-        ggml_nbytes(q8_gemm) != expected_bytes ||
-        ggml_nbytes(silu->src[0]) != expected_bytes ||
-        ggml_nbytes(silu) != expected_bytes ||
-        ggml_nbytes(side) != expected_bytes ||
-        ggml_nbytes(node) != expected_bytes ||
-        !ggml_is_contiguous(q8_gemm->src[0]) ||
-        !ggml_is_contiguous(q8_gemm->src[1]) ||
-        !ggml_backend_hrx_is_f32_dense(q8_gemm) ||
-        !ggml_backend_hrx_is_f32_dense(silu->src[0]) ||
-        !ggml_backend_hrx_is_f32_dense(silu) ||
-        !ggml_backend_hrx_is_f32_dense(side) ||
-        !ggml_backend_hrx_is_f32_dense(node) ||
-        !ggml_backend_hrx_zero_offset_full_span_chain_reaches(
-            silu->src[0], q8_gemm) ||
-        !ggml_backend_hrx_same_storage_span(q8_gemm, silu->src[0]) ||
-        !ggml_backend_hrx_same_storage_span(side, node) ||
-        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm, silu) ||
-        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm, side) ||
-        !ggml_backend_hrx_disjoint_storage_spans(silu, side) ||
-        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm->src[0], side) ||
-        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm->src[1], side) ||
-        (q8_gemm->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (silu->flags & GGML_TENSOR_FLAG_OUTPUT)) {
-        return false;
-    }
+    out_match->q8_gemm = q8_gemm;
+    out_match->silu = silu;
+    out_match->side = side;
+    return true;
+}
+
+static bool ggml_backend_hrx_gdn_q8_silu_mul_graph_is_safe(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * node,
+        const ggml_backend_hrx_gdn_q8_silu_mul_match & match) {
+    const ggml_tensor * q8_gemm = match.q8_gemm;
+    const ggml_tensor * silu = match.silu;
+
     const ggml_tensor * q8_chain = silu->src[0];
-    for (int depth = 0;
-         q8_chain && q8_chain != q8_gemm && depth < 16;
-         ++depth) {
+    while (q8_chain && q8_chain != q8_gemm) {
         if ((q8_chain->flags & GGML_TENSOR_FLAG_OUTPUT) ||
             !ggml_backend_hrx_is_metadata_op(q8_chain)) {
             return false;
@@ -2505,9 +2969,6 @@ static bool ggml_backend_hrx_match_gdn_q8_silu_mul(
         !(q8_index < silu_index && silu_index < terminal_index)) {
         return false;
     }
-    // Delaying the q8 work to the terminal MUL is safe only across the exact
-    // absorbed chain; another compute node could reuse/overwrite its activation
-    // allocation before the fused dispatch reads it.
     for (int i = q8_index + 1; i < terminal_index; ++i) {
         const ggml_tensor * between = cgraph->nodes[i];
         if (between && between != silu &&
@@ -2516,19 +2977,82 @@ static bool ggml_backend_hrx_match_gdn_q8_silu_mul(
             return false;
         }
     }
+    return true;
+}
 
-    out_match->q8_gemm = q8_gemm;
-    out_match->silu = silu;
-    out_match->side = side;
+static bool ggml_backend_hrx_match_gdn_q8_silu_mul(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * node,
+        ggml_backend_hrx_gdn_q8_silu_mul_match * out_match) {
+    if (!device_context || !device_context->current_graph || !out_match) {
+        return false;
+    }
+
+    ggml_backend_hrx_gdn_q8_silu_mul_match match = {};
+    if (!ggml_backend_hrx_match_gdn_q8_silu_mul_chain(node, &match)) {
+        return false;
+    }
+    const ggml_tensor * q8_gemm = match.q8_gemm;
+    const ggml_tensor * silu = match.silu;
+    const ggml_tensor * side = match.side;
+
+    const ggml_tensor * weight = q8_gemm->src[0];
+    const ggml_tensor * input = q8_gemm->src[1];
+    const int64_t k = weight->ne[0];
+    const int64_t rows = weight->ne[1];
+    const int64_t cols = input->ne[1];
+    if (k <= 0 || rows <= 0 || cols <= 0 ||
+        weight->ne[2] != 1 || weight->ne[3] != 1 ||
+        input->ne[0] != k || input->ne[2] != 1 || input->ne[3] != 1 ||
+        q8_gemm->ne[0] != rows || q8_gemm->ne[1] != cols ||
+        q8_gemm->ne[2] != 1 || q8_gemm->ne[3] != 1 ||
+        !ggml_are_same_shape(side, node) ||
+        !ggml_are_same_shape(silu, node) ||
+        weight->nb[1] != ggml_row_size(weight->type, k) ||
+        input->nb[1] != static_cast<size_t>(k) * sizeof(float) ||
+        q8_gemm->nb[1] != static_cast<size_t>(rows) * sizeof(float) ||
+        ggml_nbytes(q8_gemm) != ggml_nbytes(silu->src[0]) ||
+        ggml_nbytes(q8_gemm) != ggml_nbytes(silu) ||
+        ggml_nbytes(q8_gemm) != ggml_nbytes(side) ||
+        ggml_nbytes(q8_gemm) != ggml_nbytes(node) ||
+        !ggml_is_contiguous(weight) ||
+        !ggml_is_contiguous(input) ||
+        !ggml_backend_hrx_is_f32_dense(q8_gemm) ||
+        !ggml_backend_hrx_is_f32_dense(silu->src[0]) ||
+        !ggml_backend_hrx_is_f32_dense(silu) ||
+        !ggml_backend_hrx_is_f32_dense(side) ||
+        !ggml_backend_hrx_is_f32_dense(node) ||
+        !ggml_backend_hrx_zero_offset_full_span_chain_reaches(
+            silu->src[0], q8_gemm) ||
+        !ggml_backend_hrx_same_storage_span(q8_gemm, silu->src[0]) ||
+        !ggml_backend_hrx_same_storage_span(side, node) ||
+        !ggml_backend_hrx_disjoint_storage_spans(weight, input) ||
+        !ggml_backend_hrx_disjoint_storage_spans(weight, q8_gemm) ||
+        !ggml_backend_hrx_disjoint_storage_spans(input, q8_gemm) ||
+        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm, silu) ||
+        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm, side) ||
+        !ggml_backend_hrx_disjoint_storage_spans(silu, side) ||
+        !ggml_backend_hrx_disjoint_storage_spans(weight, side) ||
+        !ggml_backend_hrx_disjoint_storage_spans(input, side) ||
+        (q8_gemm->flags & GGML_TENSOR_FLAG_OUTPUT) ||
+        (silu->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+        return false;
+    }
+    if (!ggml_backend_hrx_gdn_q8_silu_mul_graph_is_safe(
+            device_context, node, match)) {
+        return false;
+    }
+    *out_match = match;
     return true;
 }
 
 static bool ggml_backend_hrx_make_gdn_q8_silu_mul_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
+        const char * fusion,
         ggml_backend_hrx_dispatch_request * out_request,
         ggml_backend_hrx_gdn_q8_silu_mul_match * out_match = nullptr) {
-    if (!device_context || !out_request) {
+    if (!device_context || !fusion || !out_request) {
         return false;
     }
     ggml_backend_hrx_gdn_q8_silu_mul_match match = {};
@@ -2542,11 +3066,10 @@ static bool ggml_backend_hrx_make_gdn_q8_silu_mul_request(
             device_context, match.q8_gemm, &request.problem)) {
         return false;
     }
-    request.problem.supports["fusion"] =
-        "MUL_MAT_GDN_SILU_MUL_EPILOGUE";
+    request.problem.supports["fusion"] = fusion;
     // Keep the matrix-output facts from make_mul_mat_problem: the fused
-    // destination is a byte-identical reshape, but the base route's constraints
-    // intentionally describe its logical [4096,512] matrix result.
+    // destination is a byte-identical reshape, while the base route describes
+    // the logical matrix result.
     ggml_backend_hrx_add_tensor_facts(
         &request.problem, "side", match.side);
     ggml_backend_hrx_add_tensor_facts(
@@ -2559,34 +3082,9 @@ static bool ggml_backend_hrx_make_gdn_q8_silu_mul_request(
     };
     request.constants.clear();
 
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(&problem, request.tensors);
     const auto * route =
-        device_context->reg_context && device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    const auto fusion =
-        route ? route->supports.find("fusion")
-              : decltype(route->supports.find("fusion")){};
-    if (!route ||
-        route->id !=
-            "mul_mat_q8_0_f32_wmmai8_gdn_silu_mul_epilogue" ||
-        route->family != "mul_mat_q8_0_f32_tiled" ||
-        route->op != "MUL_MAT" ||
-        route->source_id !=
-            "mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue" ||
-        route->artifact_id !=
-            "mul_mat_q8_0_wmmai8_gdn_silu_mul_epilogue_loombc" ||
-        route->root_symbol !=
-            "@hrx2_mul_mat_q8_0_f32_wmmai8_gdn_silu_mul_epilogue" ||
-        route->export_name !=
-            "hrx2_mul_mat_q8_0_f32_wmmai8_gdn_silu_mul_epilogue" ||
-        route->binding_count != 7 ||
-        route->parameter_count != 7 ||
-        route->constant_byte_length != 0 ||
-        fusion == route->supports.end() ||
-        fusion->second != "MUL_MAT_GDN_SILU_MUL_EPILOGUE") {
+        ggml_backend_hrx_find_request_route(device_context, request);
+    if (!ggml_backend_hrx_route_matches_request(route, request)) {
         return false;
     }
 
@@ -2595,63 +3093,6 @@ static bool ggml_backend_hrx_make_gdn_q8_silu_mul_request(
         *out_match = match;
     }
     return true;
-}
-
-static bool ggml_backend_hrx_gdn_rms_side_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id !=
-            "mul_mat_q8_0_f32_wmmai8_gdn_rms_side_epilogue" ||
-        route->family != "mul_mat_q8_0_f32_tiled" ||
-        route->op != "MUL_MAT" ||
-        route->source_id !=
-            "mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue" ||
-        route->artifact_id !=
-            "mul_mat_q8_0_wmmai8_gdn_rms_side_epilogue_loombc" ||
-        route->root_symbol !=
-            "@hrx2_mul_mat_q8_0_f32_wmmai8_gdn_rms_side_epilogue" ||
-        route->export_name !=
-            "hrx2_mul_mat_q8_0_f32_wmmai8_gdn_rms_side_epilogue" ||
-        route->binding_count != 9 ||
-        route->parameter_count != 9 ||
-        route->constant_byte_length != 0 ||
-        route->prepasses.size() != 2) {
-        return false;
-    }
-    const auto fusion = route->supports.find("fusion");
-    const auto & scale = route->prepasses[0];
-    const auto & qact = route->prepasses[1];
-    return fusion != route->supports.end() &&
-           fusion->second ==
-               "MUL_MAT_GDN_RMS_SIDE_SILU_MUL_EPILOGUE" &&
-           scale.enabled &&
-           scale.artifact_id ==
-               "gdn_rms_side_scale_prepass_loombc" &&
-           scale.root_symbol ==
-               "@hrx2_gdn_rms_side_scales_f32" &&
-           scale.export_name ==
-               "hrx2_gdn_rms_side_scales_f32" &&
-           scale.src_index == 2 &&
-           scale.src_indices.size() == 1 &&
-           scale.src_indices[0] == 2 &&
-           scale.dst_index == -1 &&
-           scale.bytes_per_element == sizeof(float) &&
-           scale.scratch_element_sources ==
-               std::vector<std::string>({
-                   "shape.gdn_rms_side.nrows",
-               }) &&
-           !scale.persistent &&
-           scale.scratch_class == "gdn_rms_side_scale" &&
-           qact.enabled &&
-           qact.artifact_id == "quant_act_q8_loombc" &&
-           qact.root_symbol == "@hrx2_quant_act_q8" &&
-           qact.export_name == "hrx2_quant_act_q8" &&
-           qact.src_index == 1 &&
-           qact.src_indices.size() == 1 &&
-           qact.src_indices[0] == 1 &&
-           qact.dst_index == -1 &&
-           qact.bytes_per_element == 0 &&
-           qact.scratch_class.empty();
 }
 
 static const ggml_backend_hrx_gdn_rms_side_layer_plan *
@@ -2686,9 +3127,11 @@ static bool ggml_backend_hrx_make_gdn_rms_side_request(
     request.problem.supports["fusion"] =
         "MUL_MAT_GDN_RMS_SIDE_SILU_MUL_EPILOGUE";
     ggml_backend_hrx_set_shape_alias(
-        &request.problem, "gdn_rms_side", "ncols", 128);
+        &request.problem, "gdn_rms_side", "ncols",
+        layer.raw->ne[0]);
     ggml_backend_hrx_set_shape_alias(
-        &request.problem, "gdn_rms_side", "nrows", 16384);
+        &request.problem, "gdn_rms_side", "nrows",
+        ggml_backend_hrx_tensor_row_count(layer.raw));
     ggml_backend_hrx_add_tensor_facts(
         &request.problem, "raw_side", layer.raw);
     ggml_backend_hrx_add_tensor_facts(
@@ -2704,16 +3147,33 @@ static bool ggml_backend_hrx_make_gdn_rms_side_request(
     };
     request.constants.clear();
 
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
     const auto * route =
-        device_context->reg_context &&
-                device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    if (!ggml_backend_hrx_gdn_rms_side_route_is_exact(route)) {
+        ggml_backend_hrx_find_request_route(device_context, request);
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
+        route->prepasses.size() != 2) {
+        return false;
+    }
+    const auto & scale = route->prepasses[0];
+    const auto & qact = route->prepasses[1];
+    if (!scale.enabled ||
+        scale.src_indices.size() != 1 ||
+        scale.src_indices[0] != 2 ||
+        scale.dst_index != -1 ||
+        scale.bytes_per_element != sizeof(float) ||
+        scale.scratch_element_sources.size() != 1 ||
+        scale.scratch_element_sources[0] !=
+            "shape.gdn_rms_side.nrows" ||
+        scale.persistent ||
+        scale.scratch_class.empty() ||
+        !qact.enabled ||
+        qact.src_indices.size() != 1 ||
+        qact.src_indices[0] != 1 ||
+        qact.dst_index != -1 ||
+        qact.bytes_per_element != 0 ||
+        qact.scratch_element_sources.size() != 2 ||
+        qact.scratch_element_sources[0] != "shape.k" ||
+        qact.scratch_element_sources[1] != "shape.cols" ||
+        !qact.scratch_class.empty()) {
         return false;
     }
     *out_request = std::move(request);
@@ -2733,358 +3193,6 @@ static bool ggml_backend_hrx_make_current_gdn_rms_side_request(
     return layer &&
            ggml_backend_hrx_make_gdn_rms_side_request(
                device_context, *layer, out_request);
-}
-
-struct ggml_backend_hrx_decode_gdn_q8_silu_mul_match {
-    const ggml_tensor * q8_gemm = nullptr;
-    const ggml_tensor * silu = nullptr;
-    const ggml_tensor * side = nullptr;
-};
-
-static bool ggml_backend_hrx_match_decode_gdn_q8_silu_mul(
-        ggml_backend_hrx_device_context * device_context,
-        const ggml_tensor * node,
-        ggml_backend_hrx_decode_gdn_q8_silu_mul_match * out_match) {
-    if (!device_context || !device_context->current_graph || !node ||
-        !out_match || node->op != GGML_OP_MUL ||
-        !node->src[0] || !node->src[1] ||
-        node->type != GGML_TYPE_F32 ||
-        node->src[0]->type != GGML_TYPE_F32 ||
-        node->src[1]->type != GGML_TYPE_F32) {
-        return false;
-    }
-
-    // The admitted one-token graph is exactly
-    // MUL(side, SILU(reshape(Q8_GEMM))) with dst == side. Do not admit the
-    // commuted MUL orientation: only binding2/binding3 alias was observed and
-    // proved safe for the four-binding kernel.
-    const ggml_tensor * side = node->src[0];
-    const ggml_tensor * silu = node->src[1];
-    if (silu->op != GGML_OP_UNARY ||
-        ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU ||
-        !silu->src[0]) {
-        return false;
-    }
-    const ggml_tensor * q8_gemm =
-        ggml_backend_hrx_zero_offset_source_chain_target(
-            silu->src[0], GGML_OP_MUL_MAT);
-    if (!q8_gemm || !q8_gemm->src[0] || !q8_gemm->src[1] ||
-        q8_gemm->src[0]->type != GGML_TYPE_Q8_0 ||
-        q8_gemm->src[1]->type != GGML_TYPE_F32 ||
-        q8_gemm->type != GGML_TYPE_F32) {
-        return false;
-    }
-
-    constexpr int64_t expected_bytes = 4096ll * sizeof(float);
-    if (q8_gemm->src[0]->ne[0] != 2048 ||
-        q8_gemm->src[0]->ne[1] != 4096 ||
-        q8_gemm->src[0]->ne[2] != 1 ||
-        q8_gemm->src[0]->ne[3] != 1 ||
-        q8_gemm->src[1]->ne[0] != 2048 ||
-        q8_gemm->src[1]->ne[1] != 1 ||
-        q8_gemm->src[1]->ne[2] != 1 ||
-        q8_gemm->src[1]->ne[3] != 1 ||
-        q8_gemm->ne[0] != 4096 ||
-        q8_gemm->ne[1] != 1 ||
-        q8_gemm->ne[2] != 1 ||
-        q8_gemm->ne[3] != 1 ||
-        silu->src[0]->ne[0] != 128 ||
-        silu->src[0]->ne[1] != 32 ||
-        silu->src[0]->ne[2] != 1 ||
-        silu->src[0]->ne[3] != 1 ||
-        silu->ne[0] != 128 ||
-        silu->ne[1] != 32 ||
-        silu->ne[2] != 1 ||
-        silu->ne[3] != 1 ||
-        side->ne[0] != 128 ||
-        side->ne[1] != 32 ||
-        side->ne[2] != 1 ||
-        side->ne[3] != 1 ||
-        node->ne[0] != 128 ||
-        node->ne[1] != 32 ||
-        node->ne[2] != 1 ||
-        node->ne[3] != 1 ||
-        !ggml_are_same_shape(side, node) ||
-        !ggml_are_same_shape(silu, node) ||
-        q8_gemm->src[0]->nb[1] != 2176 ||
-        q8_gemm->src[1]->nb[1] != 2048 * sizeof(float) ||
-        q8_gemm->nb[1] != 4096 * sizeof(float) ||
-        ggml_nbytes(q8_gemm->src[0]) != 8912896 ||
-        ggml_nbytes(q8_gemm->src[1]) != 8192 ||
-        ggml_nbytes(q8_gemm) != expected_bytes ||
-        ggml_nbytes(silu->src[0]) != expected_bytes ||
-        ggml_nbytes(silu) != expected_bytes ||
-        ggml_nbytes(side) != expected_bytes ||
-        ggml_nbytes(node) != expected_bytes ||
-        !ggml_is_contiguous(q8_gemm->src[0]) ||
-        !ggml_is_contiguous(q8_gemm->src[1]) ||
-        !ggml_backend_hrx_is_f32_dense(q8_gemm) ||
-        !ggml_backend_hrx_is_f32_dense(silu->src[0]) ||
-        !ggml_backend_hrx_is_f32_dense(silu) ||
-        !ggml_backend_hrx_is_f32_dense(side) ||
-        !ggml_backend_hrx_is_f32_dense(node) ||
-        !ggml_backend_hrx_zero_offset_full_span_chain_reaches(
-            silu->src[0], q8_gemm) ||
-        !ggml_backend_hrx_same_storage_span(q8_gemm, silu->src[0]) ||
-        !ggml_backend_hrx_same_storage_span(side, node) ||
-        !ggml_backend_hrx_disjoint_storage_spans(
-            q8_gemm->src[0], q8_gemm->src[1]) ||
-        !ggml_backend_hrx_disjoint_storage_spans(
-            q8_gemm->src[0], q8_gemm) ||
-        !ggml_backend_hrx_disjoint_storage_spans(
-            q8_gemm->src[1], q8_gemm) ||
-        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm, silu) ||
-        !ggml_backend_hrx_disjoint_storage_spans(q8_gemm, side) ||
-        !ggml_backend_hrx_disjoint_storage_spans(silu, side) ||
-        !ggml_backend_hrx_disjoint_storage_spans(
-            q8_gemm->src[0], side) ||
-        !ggml_backend_hrx_disjoint_storage_spans(
-            q8_gemm->src[1], side) ||
-        (q8_gemm->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (silu->flags & GGML_TENSOR_FLAG_OUTPUT)) {
-        return false;
-    }
-
-    // Every metadata node between the Q8 output and SiLU input must preserve
-    // the complete zero-offset span and remain private.
-    const ggml_tensor * q8_chain = silu->src[0];
-    for (int depth = 0;
-         q8_chain && q8_chain != q8_gemm && depth < 16;
-         ++depth) {
-        if ((q8_chain->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-            !ggml_backend_hrx_is_metadata_op(q8_chain)) {
-            return false;
-        }
-        q8_chain = q8_chain->src[0] ?
-            q8_chain->src[0] : q8_chain->view_src;
-    }
-    if (q8_chain != q8_gemm) {
-        return false;
-    }
-
-    const ggml_cgraph * cgraph = device_context->current_graph;
-    int q8_index = -1;
-    int silu_index = -1;
-    int terminal_index = -1;
-    int silu_uses = 0;
-    for (int i = 0; i < cgraph->n_nodes; ++i) {
-        const ggml_tensor * candidate = cgraph->nodes[i];
-        if (!candidate) {
-            continue;
-        }
-        if (candidate == q8_gemm) {
-            q8_index = i;
-        } else if (candidate == silu) {
-            silu_index = i;
-        } else if (candidate == node) {
-            terminal_index = i;
-        }
-        for (int s = 0; s < GGML_MAX_SRC; ++s) {
-            const ggml_tensor * source = candidate->src[s];
-            if (!source) {
-                continue;
-            }
-            if (ggml_backend_hrx_metadata_chain_reaches(source, silu)) {
-                if (candidate != node || source != silu) {
-                    return false;
-                }
-                ++silu_uses;
-            }
-            if (!ggml_backend_hrx_metadata_chain_reaches(
-                    source, q8_gemm)) {
-                continue;
-            }
-            const bool exact_silu_input =
-                candidate == silu && source == silu->src[0] &&
-                ggml_backend_hrx_zero_offset_full_span_chain_reaches(
-                    source, q8_gemm);
-            const bool exact_metadata_link =
-                ggml_backend_hrx_is_metadata_op(candidate) &&
-                ggml_backend_hrx_zero_offset_full_span_chain_reaches(
-                    candidate, q8_gemm) &&
-                ggml_backend_hrx_zero_offset_full_span_chain_reaches(
-                    silu->src[0], candidate);
-            if ((!exact_silu_input && !exact_metadata_link) ||
-                (exact_metadata_link &&
-                 (candidate->flags & GGML_TENSOR_FLAG_OUTPUT))) {
-                return false;
-            }
-        }
-    }
-    if (silu_uses != 1 ||
-        q8_index < 0 || silu_index < 0 || terminal_index < 0 ||
-        !(q8_index < silu_index && silu_index < terminal_index)) {
-        return false;
-    }
-    // The delayed terminal launch is safe only when no unrelated compute can
-    // alter an input or reuse the in-place destination between the producer
-    // and terminal MUL.
-    for (int i = q8_index + 1; i < terminal_index; ++i) {
-        const ggml_tensor * between = cgraph->nodes[i];
-        if (between && between != silu &&
-            !ggml_backend_hrx_is_metadata_op(between) &&
-            !ggml_backend_hrx_is_empty_op(between)) {
-            return false;
-        }
-    }
-
-    out_match->q8_gemm = q8_gemm;
-    out_match->silu = silu;
-    out_match->side = side;
-    return true;
-}
-
-static bool ggml_backend_hrx_decode_gdn_q8_silu_mul_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    static const char * route_id =
-        "mul_mat_q8_0_f32_packed_decode_k2048_r4096_c1_wg256_"
-        "scfunroll2_gdn_silu_mul_epilogue";
-    static const char * source_id =
-        "mul_mat_q8_0_f32_packed_decode_gdn_silu_mul_epilogue";
-    static const char * symbol =
-        "hrx2_mul_mat_q8_0_f32_static_packed_scf_unroll_"
-        "decode_gdn_silu_mul_epilogue";
-    if (!route ||
-        route->id != route_id ||
-        route->family != "mul_mat_q8_0_f32" ||
-        route->op != "MUL_MAT" ||
-        route->source_id != source_id ||
-        route->artifact_id != std::string(source_id) + "_loombc" ||
-        route->root_symbol != std::string("@") + symbol ||
-        route->export_name != symbol ||
-        route->binding_count != 4 ||
-        route->parameter_count != 4 ||
-        route->constant_byte_length != 0 ||
-        !route->prepasses.empty() ||
-        route->constraints.size() != 15 ||
-        route->bindings.size() != 5) {
-        return false;
-    }
-    const auto fusion = route->supports.find("fusion");
-    if (fusion == route->supports.end() ||
-        fusion->second !=
-            "MUL_MAT_GDN_SILU_MUL_EPILOGUE_DECODE") {
-        return false;
-    }
-    const std::array<std::pair<const char *, int64_t>, 3>
-        exact_shapes = {{
-            {"k", 2048},
-            {"rows", 4096},
-            {"cols", 1},
-        }};
-    for (const auto & [name, value] : exact_shapes) {
-        const auto minimum = route->shape_min.find(name);
-        const auto maximum = route->shape_max.find(name);
-        if (minimum == route->shape_min.end() ||
-            maximum == route->shape_max.end() ||
-            minimum->second != value ||
-            maximum->second != value) {
-            return false;
-        }
-    }
-    const std::array<std::pair<const char *, const char *>, 3>
-        shape_bindings = {{
-            {"@hrx2.shape.k", "k"},
-            {"@hrx2.shape.rows", "rows"},
-            {"@hrx2.shape.cols", "cols"},
-        }};
-    for (size_t i = 0; i < shape_bindings.size(); ++i) {
-        if (route->bindings[i].key != shape_bindings[i].first ||
-            route->bindings[i].shape_source !=
-                shape_bindings[i].second ||
-            !route->bindings[i].value.empty()) {
-            return false;
-        }
-    }
-    if (route->bindings[3].key !=
-            "@hrx2.tuning.workgroup_size" ||
-        route->bindings[3].value != "256" ||
-        !route->bindings[3].shape_source.empty() ||
-        route->bindings[4].key !=
-            "@hrx2.tuning.q8_0_f32.unroll_factor" ||
-        route->bindings[4].value != "2" ||
-        !route->bindings[4].shape_source.empty()) {
-        return false;
-    }
-    const auto has_overlap = [route](
-            const char * source, int64_t value) {
-        size_t matches = 0;
-        for (const auto & constraint : route->constraints) {
-            if (constraint.source == source &&
-                constraint.has_eq_value &&
-                constraint.eq_value == value) {
-                ++matches;
-            }
-        }
-        return matches == 1;
-    };
-    for (int i = 0; i < 4; ++i) {
-        for (int j = i + 1; j < 4; ++j) {
-            const std::string source =
-                "tensor_overlap." + std::to_string(i) + "_" +
-                std::to_string(j);
-            if (!has_overlap(
-                    source.c_str(), (i == 2 && j == 3) ? 1 : 0)) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-static bool ggml_backend_hrx_make_decode_gdn_q8_silu_mul_request(
-        ggml_backend_hrx_device_context * device_context,
-        const ggml_tensor * node,
-        ggml_backend_hrx_dispatch_request * out_request,
-        ggml_backend_hrx_decode_gdn_q8_silu_mul_match *
-            out_match = nullptr) {
-    if (!device_context || !out_request) {
-        return false;
-    }
-    ggml_backend_hrx_decode_gdn_q8_silu_mul_match match = {};
-    if (!ggml_backend_hrx_match_decode_gdn_q8_silu_mul(
-            device_context, node, &match)) {
-        return false;
-    }
-
-    ggml_backend_hrx_dispatch_request request = {};
-    if (!ggml_backend_hrx_make_mul_mat_problem(
-            device_context, match.q8_gemm, &request.problem)) {
-        return false;
-    }
-    request.problem.supports["fusion"] =
-        "MUL_MAT_GDN_SILU_MUL_EPILOGUE_DECODE";
-    ggml_backend_hrx_add_tensor_facts(
-        &request.problem, "side", match.side);
-    ggml_backend_hrx_add_tensor_facts(
-        &request.problem, "terminal_dst", node);
-    request.tensors = {
-        match.q8_gemm->src[0],
-        match.q8_gemm->src[1],
-        match.side,
-        node,
-    };
-    request.constants.clear();
-
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
-    const auto * route =
-        device_context->reg_context &&
-                device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    if (!ggml_backend_hrx_decode_gdn_q8_silu_mul_route_is_exact(
-            route)) {
-        return false;
-    }
-
-    *out_request = std::move(request);
-    if (out_match) {
-        *out_match = match;
-    }
-    return true;
 }
 
 struct ggml_backend_hrx_fa_gate_epilogue_match;
@@ -3155,6 +3263,9 @@ static void ggml_backend_hrx_set_pointwise_shape(
     ggml_backend_hrx_set_shape_alias(problem, "pointwise", "src1_ncols", node->src[1]->ne[0]);
 }
 
+static bool ggml_backend_hrx_moe_router_tail_candidate_domain(
+        const ggml_tensor * terminal);
+
 static const ggml_backend_hrx_moe_router_tail_layer_plan *
 ggml_backend_hrx_find_moe_router_tail_layer(
         const ggml_backend_hrx_moe_router_tail_graph_plan * plan,
@@ -3163,7 +3274,7 @@ ggml_backend_hrx_find_moe_router_tail_layer(
         return nullptr;
     }
     for (const auto & layer : plan->layers) {
-        if (layer.adds[6] == terminal) {
+        if (layer.dst == terminal) {
             return &layer;
         }
     }
@@ -3174,17 +3285,32 @@ static bool ggml_backend_hrx_make_moe_router_tail_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_backend_hrx_moe_router_tail_layer_plan & layer,
         ggml_backend_hrx_dispatch_request * out_request) {
-    if (!device_context || !out_request || !layer.selected || !layer.dst ||
+    if (!device_context || !out_request || !layer.down || !layer.dst ||
         !layer.router_source ||
-        (layer.ntokens != 1 && layer.ntokens != 512) ||
-        (layer.ntokens == 1 &&
-         (layer.router_source_stride != 8 ||
-          layer.router_source_offset != 0)) ||
-        (layer.ntokens == 512 &&
-         (layer.router_source_stride != 256 ||
-          layer.router_source_offset != 8))) {
+        layer.ntokens <= 0 ||
+        layer.ntokens !=
+            ggml_backend_hrx_tensor_row_count(layer.dst) ||
+        layer.down->type != GGML_TYPE_F32 ||
+        layer.dst->type != GGML_TYPE_F32 ||
+        layer.down->ne[0] != layer.dst->ne[0] ||
+        layer.down->ne[1] <= 0 ||
+        layer.down->ne[2] * layer.down->ne[3] !=
+            layer.ntokens ||
+        layer.down->nb[1] % sizeof(float) != 0 ||
+        layer.down->nb[2] % sizeof(float) != 0 ||
+        layer.dst->nb[1] % sizeof(float) != 0 ||
+        layer.router_source_stride <= 0 ||
+        layer.router_source_offset < 0) {
         return false;
     }
+    const int64_t n = layer.dst->ne[0];
+    const int64_t nslices = layer.down->ne[1];
+    const int64_t src_slice_stride =
+        static_cast<int64_t>(layer.down->nb[1] / sizeof(float));
+    const int64_t src_token_stride =
+        static_cast<int64_t>(layer.down->nb[2] / sizeof(float));
+    const int64_t dst_token_stride =
+        static_cast<int64_t>(layer.dst->nb[1] / sizeof(float));
     out_request->problem = {};
     out_request->problem.op = "ADD";
     out_request->problem.target_key = device_context->architecture;
@@ -3195,17 +3321,20 @@ static bool ggml_backend_hrx_make_moe_router_tail_request(
         {"fusion", "ADD_CHAIN_SLICE_SUM"},
     };
     ggml_backend_hrx_set_shape_alias(
-        &out_request->problem, "sumslices", "n", 2048);
+        &out_request->problem, "sumslices", "n", n);
     ggml_backend_hrx_set_shape_alias(
         &out_request->problem, "sumslices", "ntokens", layer.ntokens);
     ggml_backend_hrx_set_shape_alias(
-        &out_request->problem, "sumslices", "nslices", 8);
+        &out_request->problem, "sumslices", "nslices", nslices);
     ggml_backend_hrx_set_shape_alias(
-        &out_request->problem, "sumslices", "src_slice_stride", 2048);
+        &out_request->problem, "sumslices", "src_slice_stride",
+        src_slice_stride);
     ggml_backend_hrx_set_shape_alias(
-        &out_request->problem, "sumslices", "src_token_stride", 16384);
+        &out_request->problem, "sumslices", "src_token_stride",
+        src_token_stride);
     ggml_backend_hrx_set_shape_alias(
-        &out_request->problem, "sumslices", "dst_token_stride", 2048);
+        &out_request->problem, "sumslices", "dst_token_stride",
+        dst_token_stride);
     ggml_backend_hrx_set_shape_alias(
         &out_request->problem, "sumslices", "router_source_stride",
         layer.router_source_stride);
@@ -3213,7 +3342,7 @@ static bool ggml_backend_hrx_make_moe_router_tail_request(
         &out_request->problem, "sumslices", "router_source_offset",
         layer.router_source_offset);
     ggml_backend_hrx_add_tensor_facts(
-        &out_request->problem, "src0", layer.selected);
+        &out_request->problem, "src0", layer.down);
     ggml_backend_hrx_add_tensor_facts(
         &out_request->problem, "dst", layer.dst);
     ggml_backend_hrx_add_tensor_facts(
@@ -3222,7 +3351,7 @@ static bool ggml_backend_hrx_make_moe_router_tail_request(
     // binding 3. Binding 2 remains present but is intentionally unused by the
     // reducer because it may share its owner with binding 1.
     out_request->tensors = {
-        layer.selected,
+        layer.down,
         layer.dst,
         layer.router_source,
     };
@@ -3244,40 +3373,25 @@ static bool ggml_backend_hrx_make_current_moe_router_tail_request(
                device_context, *layer, out_request);
 }
 
-static bool ggml_backend_hrx_shared_expert_terminal_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id !=
-            "mul_mat_q8_0_f32_wmmai8_shared_expert_terminal_epilogue" ||
-        route->family != "mul_mat_q8_0_f32_tiled" ||
-        route->op != "MUL_MAT" ||
-        route->source_id !=
-            "mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue" ||
-        route->artifact_id !=
-            "mul_mat_q8_0_wmmai8_shared_expert_terminal_epilogue_loombc" ||
-        route->root_symbol !=
-            "@hrx2_mul_mat_q8_0_f32_wmmai8_"
-            "shared_expert_terminal_epilogue" ||
-        route->export_name !=
-            "hrx2_mul_mat_q8_0_f32_wmmai8_"
-            "shared_expert_terminal_epilogue" ||
-        route->binding_count != 8 ||
-        route->parameter_count != 8 ||
-        route->constant_byte_length != 0 ||
+static bool ggml_backend_hrx_shared_expert_terminal_route_matches_request(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
         route->prepasses.size() != 1) {
         return false;
     }
-    const auto fusion = route->supports.find("fusion");
     const auto & prepass = route->prepasses[0];
-    return fusion != route->supports.end() &&
-           fusion->second ==
-               "MUL_MAT_SHARED_EXPERT_SIGMOID_MUL_ADD_EPILOGUE" &&
-           prepass.enabled &&
-           prepass.artifact_id == "quant_act_q8_loombc" &&
-           prepass.root_symbol == "@hrx2_quant_act_q8" &&
-           prepass.export_name == "hrx2_quant_act_q8" &&
-           prepass.src_index == 1 &&
-           prepass.dst_index == -1;
+    return prepass.enabled &&
+           prepass.src_indices.size() == 1 &&
+           prepass.src_indices[0] == 1 &&
+           prepass.dst_index == -1 &&
+           prepass.bytes_per_element == 0 &&
+           prepass.scratch_element_sources.size() == 2 &&
+           prepass.scratch_element_sources[0] == "shape.k" &&
+           prepass.scratch_element_sources[1] == "shape.cols" &&
+           prepass.element_binding_key.empty() &&
+           !prepass.persistent &&
+           prepass.scratch_class.empty();
 }
 
 static const ggml_backend_hrx_shared_expert_terminal_layer_plan *
@@ -3326,16 +3440,10 @@ static bool ggml_backend_hrx_make_shared_expert_terminal_request(
     };
     request.constants.clear();
 
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
     const auto * route =
-        device_context->reg_context &&
-                device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    if (!ggml_backend_hrx_shared_expert_terminal_route_is_exact(route)) {
+        ggml_backend_hrx_find_request_route(device_context, request);
+    if (!ggml_backend_hrx_shared_expert_terminal_route_matches_request(
+            route, request)) {
         return false;
     }
     *out_request = std::move(request);
@@ -3402,8 +3510,41 @@ static bool ggml_backend_hrx_make_mul_mat_id_request(
 static constexpr size_t GGML_HRX_MMID_TABLE_BYTES = 8 * 1024 * 1024;
 static constexpr size_t GGML_HRX_MMID_QACT_OFFSET =
     GGML_HRX_MMID_TABLE_BYTES + 16 * 1024;
+static constexpr int64_t GGML_HRX_MMID_QACT_NSELECTED = 8;
+static constexpr int64_t GGML_HRX_MMID_QACT_NTOKENS = 512;
+static constexpr size_t GGML_HRX_MMID_QACT_ROW_BYTES = 640;
 static constexpr size_t GGML_HRX_MMID_QACT_END =
-    GGML_HRX_MMID_QACT_OFFSET + 512 * 8 * 640;
+    GGML_HRX_MMID_QACT_OFFSET +
+    GGML_HRX_MMID_QACT_NTOKENS *
+        GGML_HRX_MMID_QACT_NSELECTED *
+        GGML_HRX_MMID_QACT_ROW_BYTES;
+
+static bool ggml_backend_hrx_terminal_qact_candidate_domain(
+        const ggml_tensor * down) {
+    if (!down || down->op != GGML_OP_MUL_MAT_ID ||
+        !down->src[0] || !down->src[1] || !down->src[2] ||
+        !ggml_backend_hrx_is_q5_down_group4_tensor(down->src[0])) {
+        return false;
+    }
+    const ggml_tensor * weight = down->src[0];
+    const ggml_tensor * glu = down->src[1];
+    const ggml_tensor * ids = down->src[2];
+    return glu->op == GGML_OP_GLU &&
+           ggml_get_glu_op(glu) == GGML_GLU_OP_SWIGLU &&
+           glu->type == GGML_TYPE_F32 &&
+           ids->type == GGML_TYPE_I32 &&
+           down->type == GGML_TYPE_F32 &&
+           ids->ne[0] > 0 && ids->ne[1] > 0 &&
+           ids->ne[2] == 1 && ids->ne[3] == 1 &&
+           glu->ne[0] == weight->ne[0] &&
+           glu->ne[1] == ids->ne[0] &&
+           glu->ne[2] == ids->ne[1] &&
+           glu->ne[3] == 1 &&
+           down->ne[0] == weight->ne[1] &&
+           down->ne[1] == ids->ne[0] &&
+           down->ne[2] == ids->ne[1] &&
+           down->ne[3] == 1;
+}
 
 static const ggml_backend_hrx_terminal_qact_layer_plan *
 ggml_backend_hrx_find_terminal_qact_layer(
@@ -3423,7 +3564,9 @@ ggml_backend_hrx_find_terminal_qact_layer(
 static bool ggml_backend_hrx_make_rms_norm_mul_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
-        ggml_backend_hrx_dispatch_request * out_request) {
+        ggml_backend_hrx_dispatch_request * out_request,
+        const ggml_backend_hrx_direct_fusion_match *
+            validated_graph_match = nullptr) {
     if (!device_context || !out_request || !node || node->op != GGML_OP_MUL ||
         !node->src[0] || !node->src[1] || node->src[0]->op != GGML_OP_RMS_NORM ||
         !node->src[0]->src[0] || node->src[0]->type != GGML_TYPE_F32 ||
@@ -3440,6 +3583,20 @@ static bool ggml_backend_hrx_make_rms_norm_mul_request(
     const int64_t nrows = ggml_backend_hrx_tensor_row_count(node);
     if (src->ne[0] != ncols || ggml_backend_hrx_tensor_row_count(src) != nrows ||
         weight->ne[0] != ncols || ggml_backend_hrx_tensor_row_count(weight) != 1) {
+        return false;
+    }
+    ggml_backend_hrx_direct_fusion_match local_graph_match = {};
+    if (!validated_graph_match) {
+        if (!ggml_backend_hrx_match_direct_fusion_graph(
+                device_context->current_graph, node,
+                &local_graph_match,
+                device_context->current_node_index)) {
+            return false;
+        }
+        validated_graph_match = &local_graph_match;
+    }
+    if (validated_graph_match->kind !=
+            ggml_backend_hrx_direct_fusion_kind::rms_norm_mul) {
         return false;
     }
 
@@ -3468,7 +3625,9 @@ static bool ggml_backend_hrx_make_rms_norm_mul_request(
 static bool ggml_backend_hrx_make_add_rms_norm_mul_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
-        ggml_backend_hrx_dispatch_request * out_request) {
+        ggml_backend_hrx_dispatch_request * out_request,
+        const ggml_backend_hrx_direct_fusion_match *
+            validated_graph_match = nullptr) {
     if (!device_context || !out_request || !node || node->op != GGML_OP_MUL ||
         !node->src[0] || !node->src[1] || node->src[0]->op != GGML_OP_RMS_NORM ||
         !node->src[0]->src[0] || node->src[0]->src[0]->op != GGML_OP_ADD ||
@@ -3496,6 +3655,20 @@ static bool ggml_backend_hrx_make_add_rms_norm_mul_request(
         src1->ne[0] != ncols || ggml_backend_hrx_tensor_row_count(src1) != nrows ||
         weight->ne[0] != ncols || ggml_backend_hrx_tensor_row_count(weight) != 1 ||
         add->ne[0] != ncols || ggml_backend_hrx_tensor_row_count(add) != nrows) {
+        return false;
+    }
+    ggml_backend_hrx_direct_fusion_match local_graph_match = {};
+    if (!validated_graph_match) {
+        if (!ggml_backend_hrx_match_direct_fusion_graph(
+                device_context->current_graph, node,
+                &local_graph_match,
+                device_context->current_node_index)) {
+            return false;
+        }
+        validated_graph_match = &local_graph_match;
+    }
+    if (validated_graph_match->kind !=
+            ggml_backend_hrx_direct_fusion_kind::add_rms_norm_mul) {
         return false;
     }
 
@@ -3530,19 +3703,23 @@ static bool ggml_backend_hrx_make_mul_request(
     if (!device_context || !out_request || !node || node->op != GGML_OP_MUL) {
         return false;
     }
-    ggml_backend_hrx_dispatch_request decode_gdn_q8_fused;
-    if (ggml_backend_hrx_make_decode_gdn_q8_silu_mul_request(
-            device_context, node, &decode_gdn_q8_fused)) {
-        *out_request = std::move(decode_gdn_q8_fused);
-        return true;
-    }
     if (ggml_backend_hrx_make_current_gdn_rms_side_request(
             device_context, node, out_request)) {
         return true;
     }
+    ggml_backend_hrx_dispatch_request decode_gdn_q8_fused;
+    if (ggml_backend_hrx_make_gdn_q8_silu_mul_request(
+            device_context, node,
+            "MUL_MAT_GDN_SILU_MUL_EPILOGUE_DECODE",
+            &decode_gdn_q8_fused)) {
+        *out_request = std::move(decode_gdn_q8_fused);
+        return true;
+    }
     ggml_backend_hrx_dispatch_request gdn_q8_fused;
     if (ggml_backend_hrx_make_gdn_q8_silu_mul_request(
-            device_context, node, &gdn_q8_fused)) {
+            device_context, node,
+            "MUL_MAT_GDN_SILU_MUL_EPILOGUE",
+            &gdn_q8_fused)) {
         *out_request = std::move(gdn_q8_fused);
         return true;
     }
@@ -3601,37 +3778,22 @@ struct ggml_backend_hrx_topk_moe_softmax_norm_match {
     const ggml_tensor * div             = nullptr;
 };
 
-static bool ggml_backend_hrx_has_exact_shape(
-        const ggml_tensor * tensor,
-        int64_t ne0,
-        int64_t ne1,
-        int64_t ne2 = 1,
-        int64_t ne3 = 1) {
-    return tensor &&
-           tensor->ne[0] == ne0 &&
-           tensor->ne[1] == ne1 &&
-           tensor->ne[2] == ne2 &&
-           tensor->ne[3] == ne3;
-}
-
-// Qwen3.6's PP512 router is:
+// The MoE router is:
 //
-//   SOFT_MAX(logits) -----------------------> ARGSORT -> VIEW(top 8 ids)
+//   SOFT_MAX(logits) -----------------------> ARGSORT -> VIEW(top-k ids)
 //        |                                       |              |
 //        +-> RESHAPE -> GET_ROWS <---------------+              +-> expert GEMMs
 //                           |
 //                       RESHAPE ----+-> SUM_ROWS -> CLAMP --+
 //                                  +-----------------------> DIV
 //
-// The fused route is deliberately exact. In particular, the ids VIEW is not
-// dense: each token starts 256 i32s after the previous one because it views the
-// full ARGSORT destination. Bind the full destination so the kernel can retain
-// that row stride and the later expert GEMMs can keep consuming the view.
+// The ids VIEW is not necessarily dense: each token starts one full expert row
+// after the previous one because it views the ARGSORT destination. Bind the
+// full destination so the kernel retains that row stride and the later expert
+// GEMMs can keep consuming the view.
 static bool ggml_backend_hrx_match_topk_moe_early_softmax_norm(
         const ggml_tensor * node,
         ggml_backend_hrx_topk_moe_softmax_norm_match * out_match) {
-    constexpr int64_t nexperts = 256;
-    constexpr int64_t nselected = 8;
     constexpr float clamp_min = 6.103515625e-5f;
 
     if (!node || !out_match || node->op != GGML_OP_DIV ||
@@ -3683,8 +3845,11 @@ static bool ggml_backend_hrx_match_topk_moe_early_softmax_norm(
         return false;
     }
     match.logits = match.softmax->src[0];
+    const int64_t nexperts = match.logits->ne[0];
     const int64_t ntokens = match.logits->ne[1];
-    if (ntokens != 1 && ntokens != 512) {
+    const int64_t nselected = match.ids_view->ne[0];
+    if (nexperts <= 0 || ntokens <= 0 ||
+        nselected <= 0 || nselected > nexperts) {
         return false;
     }
 
@@ -3711,16 +3876,16 @@ static bool ggml_backend_hrx_match_topk_moe_early_softmax_norm(
     // Every materialized f32 value is dense. The ids view is intentionally
     // strided, but both it and its full backing have the exact row strides used
     // by ggml_argsort_top_k.
-    if (!ggml_backend_hrx_has_exact_shape(match.logits, nexperts, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.softmax, nexperts, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.probs_reshape, 1, nexperts, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.argsort, nexperts, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.ids_view, nselected, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.get_rows, 1, nselected, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.weights_reshape, nselected, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.sum_rows, 1, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.clamp, 1, ntokens) ||
-        !ggml_backend_hrx_has_exact_shape(match.div, nselected, ntokens) ||
+    if (!ggml_backend_hrx_shape_is(match.logits, nexperts, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.softmax, nexperts, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.probs_reshape, 1, nexperts, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.argsort, nexperts, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.ids_view, nselected, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.get_rows, 1, nselected, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.weights_reshape, nselected, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.sum_rows, 1, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.clamp, 1, ntokens) ||
+        !ggml_backend_hrx_shape_is(match.div, nselected, ntokens) ||
         !ggml_backend_hrx_is_f32_dense(match.logits) ||
         !ggml_backend_hrx_is_f32_dense(match.softmax) ||
         !ggml_backend_hrx_is_f32_dense(match.probs_reshape) ||
@@ -3849,7 +4014,7 @@ static bool ggml_backend_hrx_make_available_topk_moe_requests(
         const ggml_backend_hrx_topk_moe_softmax_norm_match & match,
         ggml_backend_hrx_dispatch_request * out_stage,
         ggml_backend_hrx_dispatch_request * out_copy) {
-    if (match.logits->ne[1] != 512) {
+    if (match.logits->ne[1] == 1) {
         return false;
     }
     ggml_backend_hrx_dispatch_request stage = {};
@@ -4086,11 +4251,10 @@ static bool ggml_backend_hrx_make_mul_mat_id_request(
 // ncols*nrows and never uses the two separately, so how a contiguous tensor is
 // split between them is free. Routes still gate on ncols, and the declared
 // range of @hrx2.shape.pointwise.ncols stops at 65536, so a flat tensor longer
-// than that -- the SSM state cache slice reshaped to 524288 elements -- would
-// find no route despite every kernel being able to run it. Move the excess into
-// rows. Only factors of two are taken, which is bounded work and covers the
-// shapes that occur; anything left over is passed through unchanged and simply
-// finds no route, as before.
+// than that would find no route despite every kernel being able to run it.
+// Move the excess into rows. Only factors of two are taken, which is bounded
+// work; anything left over is passed through unchanged and simply finds no
+// route, as before.
 static void ggml_backend_hrx_balance_flat_pointwise_shape(int64_t * ncols, int64_t * nrows) {
     const int64_t ncols_max = 65536;
     while (*ncols > ncols_max && (*ncols % 2) == 0) {
@@ -4168,10 +4332,8 @@ static bool ggml_backend_hrx_make_clamp_request(
     return true;
 }
 
-// SILU / SIGMOID / SOFTPLUS. The Qwen3.6 Gated-DeltaNet layers use all three
-// (conv-output gating, beta and alpha gating, shared-expert gate) and none had
-// a request builder, so every occurrence fell back off the device. Each maps to
-// a single Loom scalar primitive, so one flat elementwise request covers them.
+// SILU / SIGMOID / SOFTPLUS. Each maps to a single Loom scalar primitive, so
+// one flat elementwise request covers them.
 static bool ggml_backend_hrx_make_unary_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
@@ -4208,10 +4370,9 @@ static bool ggml_backend_hrx_make_unary_request(
     return true;
 }
 
-// Fused Gated DeltaNet. Claiming this is what stops llama.cpp decomposing the
-// 30 SSM layers into a chunked delta rule (which would need SOLVE_TRI, CUMSUM,
-// DIAG, TRI and batched 4D MUL_MAT, and tens of thousands of dispatches).
-// Scalar-gate form only; the kernel is specialised to S_v == 128 with wave32.
+// Fused Gated DeltaNet. Claiming this stops llama.cpp decomposing the op into a
+// chunked delta rule. The catalog owns the available scalar-gate
+// specializations.
 static bool ggml_backend_hrx_make_gated_delta_net_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
@@ -4233,8 +4394,8 @@ static bool ggml_backend_hrx_make_gated_delta_net_request(
 
     const int64_t S_v = v->ne[0];
     const int64_t H   = v->ne[1];
-    // Only the scalar-gate (non-KDA) form and the S_v=128 specialisation.
-    if (g->ne[0] != 1 || S_v != 128) {
+    // Only the scalar-gate (non-KDA) form.
+    if (g->ne[0] != 1) {
         return false;
     }
     // The kernel appends one state snapshot, the final one. K > 1 asks for the
@@ -4307,24 +4468,6 @@ ggml_backend_hrx_find_gdn_qk_scale_layer(
     for (const auto & layer :
          device_context->current_gdn_qk_scale_plan->layers) {
         if (layer.gated_delta_net == node) {
-            return &layer;
-        }
-    }
-    return nullptr;
-}
-
-static const ggml_backend_hrx_gdn_qk_scale_layer *
-ggml_backend_hrx_find_gdn_qk_scale_layer(
-        const ggml_backend_hrx_device_context * device_context,
-        int layer_number) {
-    if (!device_context ||
-        !device_context->current_gdn_qk_scale_plan ||
-        !device_context->current_gdn_qk_scale_plan->ready) {
-        return nullptr;
-    }
-    for (const auto & layer :
-         device_context->current_gdn_qk_scale_plan->layers) {
-        if (layer.layer == layer_number) {
             return &layer;
         }
     }
@@ -4406,10 +4549,8 @@ static bool ggml_backend_hrx_make_concat_request(
     // A dim-1 concatenation of fully contiguous operands is a linear
     // concatenation: dst holds all of src0's elements followed by all of src1's.
     // Presenting it to the dim-0 kernel as a single row of ne0*ne1*ne2 elements
-    // with unit strides is exact, and it is how the Gated-DeltaNet conv window
-    // is built on newer llama.cpp bases -- which emit dim=1 here where older
-    // ones emitted dim=0, so without this every conv_input falls to the CPU and
-    // splits the graph 61 ways.
+    // with unit strides is exact. This also covers graph builders that express
+    // a logically linear recurrent window as a dim-1 concatenation.
     const bool linear_dim1 = dim == 1 &&
         ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(node->src[1]);
     if (dim != 0 && !linear_dim1) {
@@ -4476,8 +4617,8 @@ static bool ggml_backend_hrx_make_concat_request(
 
 // The conv window that SSM_CONV reads is built by a CONCAT that prepends the
 // d_conv-1 carried state rows to this layer's x. That concat writes the entire
-// 16.9 MB production window even when the planned convolution needs only the
-// carried state and the x prefix whose arena storage is overwritten before use.
+// window even when the planned convolution needs only the carried state and an
+// x prefix whose arena storage is overwritten before use.
 // Returns the two pieces when the window is a concat the fused kernel can read
 // directly: channels-first, dim-1 concatenation, state first, both sides
 // row-contiguous with the same channel count.
@@ -4506,7 +4647,7 @@ static bool ggml_backend_hrx_ssm_conv_window_pieces(
     const int64_t d_inner = node->src[1] ? node->src[1]->ne[1] : 0;
     const int64_t n_t     = node->ne[1];
     // Channels-first only, and the split has to fall exactly on the carried rows.
-    if (d_conv != 4 || st->ne[0] != d_inner || x->ne[0] != d_inner ||
+    if (d_conv < 2 || st->ne[0] != d_inner || x->ne[0] != d_inner ||
         st->ne[1] != d_conv - 1 || x->ne[1] != n_t) {
         return false;
     }
@@ -4634,8 +4775,7 @@ ggml_backend_hrx_find_active_ssm_conv_silu_layer(
     if (!plan.owner || !plan.valid || !plan.ready ||
         plan.graph_uid != cgraph->uid ||
         plan.node_count != cgraph->n_nodes ||
-        plan.catalog != catalog ||
-        plan.layers.size() != 30) {
+        plan.catalog != catalog) {
         return nullptr;
     }
     for (const auto & layer : plan.layers) {
@@ -4664,7 +4804,8 @@ static bool ggml_backend_hrx_make_concat_window_tail_request(
         ggml_backend_hrx_find_active_ssm_conv_silu_layer(
             device_context, node);
     if (!layer || layer->window != node ||
-        device_context->current_graph != cgraph) {
+        device_context->current_graph != cgraph ||
+        ggml_backend_hrx_graph_value_is_output(cgraph, node)) {
         return false;
     }
     const ggml_tensor * state = node->src[0];
@@ -5089,13 +5230,15 @@ struct ggml_backend_hrx_fa_gate_epilogue_match {
 static bool ggml_backend_hrx_match_fa_gate_epilogue(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
-        ggml_backend_hrx_fa_gate_epilogue_match * out_match) {
+        ggml_backend_hrx_fa_gate_epilogue_match * out_match,
+        ggml_backend_hrx_dispatch_request * out_request) {
     if (!device_context || !device_context->current_graph || !node ||
-        !out_match || node->op != GGML_OP_MUL ||
+        !out_match || !out_request || node->op != GGML_OP_MUL ||
         !node->src[0] || !node->src[1] ||
         node->type != GGML_TYPE_F32) {
         return false;
     }
+    const ggml_cgraph * cgraph = device_context->current_graph;
 
     const ggml_tensor * pregate = node->src[0];
     const ggml_tensor * sigmoid = node->src[1];
@@ -5125,28 +5268,18 @@ static bool ggml_backend_hrx_match_fa_gate_epilogue(
         return false;
     }
 
-    auto exact_shape = [](const ggml_tensor * tensor,
-                          int64_t ne0, int64_t ne1,
-                          int64_t ne2, int64_t ne3) {
-        return tensor &&
-               tensor->ne[0] == ne0 && tensor->ne[1] == ne1 &&
-               tensor->ne[2] == ne2 && tensor->ne[3] == ne3;
-    };
-    constexpr size_t output_bytes =
-        256ull * 16ull * 512ull * sizeof(float);
-    constexpr size_t raw_gate_bytes = 16776192;
-    constexpr size_t joint_q_gate_bytes =
-        512ull * 8192ull * sizeof(float);
-    if (!exact_shape(q, 256, 512, 16, 1) ||
-        !exact_shape(k, 256, 512, 2, 1) ||
-        !exact_shape(v, 256, 512, 2, 1) ||
-        !exact_shape(mask, 512, 512, 1, 1) ||
-        !exact_shape(flash_attn, 256, 16, 512, 1) ||
-        !exact_shape(pregate, 4096, 512, 1, 1) ||
-        !exact_shape(raw_gate, 256, 16, 512, 1) ||
-        !exact_shape(cont, 4096, 512, 1, 1) ||
-        !exact_shape(sigmoid, 4096, 512, 1, 1) ||
-        !exact_shape(node, 4096, 512, 1, 1) ||
+    const int64_t output_elements = ggml_nelements(node);
+    if (output_elements <= 0 ||
+        ggml_nelements(flash_attn) != output_elements ||
+        ggml_nelements(raw_gate) != output_elements ||
+        q->ne[0] != flash_attn->ne[0] ||
+        q->ne[1] != flash_attn->ne[2] ||
+        q->ne[2] != flash_attn->ne[1] ||
+        q->ne[3] != flash_attn->ne[3] ||
+        !ggml_are_same_shape(raw_gate, flash_attn) ||
+        !ggml_are_same_shape(pregate, node) ||
+        !ggml_are_same_shape(cont, node) ||
+        !ggml_are_same_shape(sigmoid, node) ||
         q->type != GGML_TYPE_F32 ||
         k->type != GGML_TYPE_F16 ||
         v->type != GGML_TYPE_F16 ||
@@ -5156,36 +5289,12 @@ static bool ggml_backend_hrx_match_fa_gate_epilogue(
         raw_gate->type != GGML_TYPE_F32 ||
         cont->type != GGML_TYPE_F32 ||
         sigmoid->type != GGML_TYPE_F32 ||
-        q->op != GGML_OP_PERMUTE ||
-        k->op != GGML_OP_PERMUTE ||
-        v->op != GGML_OP_PERMUTE ||
-        q->nb[0] != sizeof(float) ||
-        q->nb[1] != 4096 * sizeof(float) ||
-        q->nb[2] != 256 * sizeof(float) ||
-        k->nb[0] != sizeof(ggml_fp16_t) ||
-        k->nb[1] != 512 * sizeof(ggml_fp16_t) ||
-        k->nb[2] != 256 * sizeof(ggml_fp16_t) ||
-        v->nb[0] != sizeof(ggml_fp16_t) ||
-        v->nb[1] != 512 * sizeof(ggml_fp16_t) ||
-        v->nb[2] != 256 * sizeof(ggml_fp16_t) ||
-        mask->nb[0] != sizeof(ggml_fp16_t) ||
-        mask->nb[1] != 512 * sizeof(ggml_fp16_t) ||
-        flash_attn->nb[0] != sizeof(float) ||
-        flash_attn->nb[1] != 256 * sizeof(float) ||
-        flash_attn->nb[2] != 4096 * sizeof(float) ||
         raw_gate->nb[0] != sizeof(float) ||
-        raw_gate->nb[1] != 512 * sizeof(float) ||
-        raw_gate->nb[2] != 8192 * sizeof(float) ||
-        raw_gate->nb[3] != 4194304 * sizeof(float) ||
-        raw_gate->view_offs != 256 * sizeof(float) ||
-        ggml_nbytes(raw_gate) != raw_gate_bytes ||
-        ggml_nbytes(raw_gate->view_src) != joint_q_gate_bytes ||
-        ggml_nbytes(q) != output_bytes ||
-        ggml_nbytes(flash_attn) != output_bytes ||
-        ggml_nbytes(pregate) != output_bytes ||
-        ggml_nbytes(cont) != output_bytes ||
-        ggml_nbytes(sigmoid) != output_bytes ||
-        ggml_nbytes(node) != output_bytes ||
+        raw_gate->nb[1] % sizeof(float) != 0 ||
+        raw_gate->nb[2] % sizeof(float) != 0 ||
+        q->nb[0] != flash_attn->nb[0] ||
+        q->nb[1] != flash_attn->nb[2] ||
+        q->nb[2] != flash_attn->nb[1] ||
         !ggml_backend_hrx_is_f32_dense(flash_attn) ||
         !ggml_backend_hrx_is_f32_dense(pregate) ||
         !ggml_backend_hrx_is_f32_dense(cont) ||
@@ -5193,38 +5302,65 @@ static bool ggml_backend_hrx_match_fa_gate_epilogue(
         !ggml_backend_hrx_is_f32_dense(node) ||
         !ggml_backend_hrx_zero_offset_full_span_chain_reaches(
             pregate, flash_attn) ||
-        (flash_attn->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (pregate->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (cont->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (sigmoid->flags & GGML_TENSOR_FLAG_OUTPUT) ||
         (q->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+        return false;
+    }
+
+    ggml_backend_hrx_dispatch_request request = {};
+    if (!ggml_backend_hrx_make_flash_attn_request(
+            device_context, flash_attn, &request) ||
+        request.constants.size() != sizeof(float)) {
+        return false;
+    }
+    request.problem.supports["fusion"] =
+        "FLASH_ATTN_CONT_SIGMOID_MUL_EPILOGUE";
+    ggml_backend_hrx_set_shape_alias(
+        &request.problem, "fa", "gate_stride_head",
+        static_cast<int64_t>(raw_gate->nb[1] / sizeof(float)));
+    ggml_backend_hrx_set_shape_alias(
+        &request.problem, "fa", "gate_stride_token",
+        static_cast<int64_t>(raw_gate->nb[2] / sizeof(float)));
+    ggml_backend_hrx_add_tensor_facts(
+        &request.problem, "fa_dst", flash_attn);
+    ggml_backend_hrx_add_tensor_facts(
+        &request.problem, "raw_gate", raw_gate);
+    ggml_backend_hrx_add_tensor_facts(
+        &request.problem, "terminal_dst", node);
+    request.tensors = {
+        flash_attn->src[0],
+        flash_attn->src[1],
+        flash_attn->src[2],
+        flash_attn->src[3],
+        raw_gate,
+        node,
+    };
+    const auto * route =
+        ggml_backend_hrx_find_request_route(device_context, request);
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
+        ggml_backend_hrx_graph_value_is_output(cgraph, flash_attn) ||
+        ggml_backend_hrx_graph_value_is_output(cgraph, pregate) ||
+        ggml_backend_hrx_graph_value_is_output(cgraph, cont) ||
+        ggml_backend_hrx_graph_value_is_output(cgraph, sigmoid)) {
         return false;
     }
 
     ggml_backend_buffer_t raw_buffer = nullptr;
     ggml_backend_buffer_t raw_parent_buffer = nullptr;
-    ggml_backend_buffer_t q_buffer = nullptr;
     size_t raw_offset = 0;
     size_t raw_parent_offset = 0;
-    size_t q_offset = 0;
     size_t raw_length = 0;
     size_t raw_parent_length = 0;
-    size_t q_length = 0;
     if (!ggml_backend_hrx_tensor_storage_range(
             raw_gate, &raw_buffer, &raw_offset, &raw_length) ||
         !ggml_backend_hrx_tensor_storage_range(
             raw_gate->view_src, &raw_parent_buffer,
             &raw_parent_offset, &raw_parent_length) ||
-        !ggml_backend_hrx_tensor_storage_range(
-            q, &q_buffer, &q_offset, &q_length) ||
         raw_buffer != raw_parent_buffer ||
-        raw_offset != raw_parent_offset + 256 * sizeof(float) ||
-        raw_length != raw_gate_bytes ||
-        raw_parent_length != joint_q_gate_bytes ||
-        raw_buffer != q_buffer ||
-        raw_offset + raw_length != q_offset ||
-        q_length != output_bytes ||
-        !ggml_backend_hrx_same_storage_span(q, node) ||
+        raw_offset < raw_parent_offset ||
+        raw_offset - raw_parent_offset != raw_gate->view_offs ||
+        raw_offset - raw_parent_offset > raw_parent_length ||
+        raw_length >
+            raw_parent_length - (raw_offset - raw_parent_offset) ||
         !ggml_backend_hrx_same_storage_span(flash_attn, pregate) ||
         !ggml_backend_hrx_same_storage_span(cont, sigmoid) ||
         !ggml_backend_hrx_same_storage_span(sigmoid, node) ||
@@ -5259,7 +5395,6 @@ static bool ggml_backend_hrx_match_fa_gate_epilogue(
         }
     }
 
-    const ggml_cgraph * cgraph = device_context->current_graph;
     int flash_index = -1;
     int cont_index = -1;
     int sigmoid_index = -1;
@@ -5334,6 +5469,7 @@ static bool ggml_backend_hrx_match_fa_gate_epilogue(
     out_match->cont = cont;
     out_match->sigmoid = sigmoid;
     out_match->raw_gate = raw_gate;
+    *out_request = std::move(request);
     return true;
 }
 
@@ -5346,72 +5482,9 @@ static bool ggml_backend_hrx_make_fa_gate_epilogue_request(
         return false;
     }
     ggml_backend_hrx_fa_gate_epilogue_match match = {};
-    if (!ggml_backend_hrx_match_fa_gate_epilogue(
-            device_context, node, &match)) {
-        return false;
-    }
-
     ggml_backend_hrx_dispatch_request request = {};
-    if (!ggml_backend_hrx_make_flash_attn_request(
-            device_context, match.flash_attn, &request) ||
-        request.constants.size() != sizeof(float)) {
-        return false;
-    }
-    request.problem.supports["fusion"] =
-        "FLASH_ATTN_CONT_SIGMOID_MUL_EPILOGUE";
-    ggml_backend_hrx_set_shape_alias(
-        &request.problem, "fa", "gate_stride_head",
-        static_cast<int64_t>(
-            match.raw_gate->nb[1] / sizeof(float)));
-    ggml_backend_hrx_set_shape_alias(
-        &request.problem, "fa", "gate_stride_token",
-        static_cast<int64_t>(
-            match.raw_gate->nb[2] / sizeof(float)));
-    ggml_backend_hrx_add_tensor_facts(
-        &request.problem, "fa_dst", match.flash_attn);
-    ggml_backend_hrx_add_tensor_facts(
-        &request.problem, "raw_gate", match.raw_gate);
-    ggml_backend_hrx_add_tensor_facts(
-        &request.problem, "terminal_dst", node);
-    request.tensors = {
-        match.flash_attn->src[0],
-        match.flash_attn->src[1],
-        match.flash_attn->src[2],
-        match.flash_attn->src[3],
-        match.raw_gate,
-        node,
-    };
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &request.problem, request.tensors);
-
-    const auto * route =
-        device_context->reg_context &&
-        device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog,
-                  request.problem)
-            : nullptr;
-    const auto fusion =
-        route ? route->supports.find("fusion")
-              : decltype(route->supports.find("fusion")){};
-    if (!route ||
-        route->id !=
-            "flash_attn_ext_f32_f16_wmma_gate_epilogue" ||
-        route->family != "flash_attn_ext_f32" ||
-        route->op != "FLASH_ATTN_EXT" ||
-        route->source_id != "flash_attn_wmma_gate_epilogue" ||
-        route->artifact_id !=
-            "flash_attn_wmma_gate_epilogue_loombc" ||
-        route->root_symbol !=
-            "@hrx2_flash_attn_ext_f32_f16_wmma_gate_epilogue" ||
-        route->export_name !=
-            "hrx2_flash_attn_ext_f32_f16_wmma_gate_epilogue" ||
-        route->binding_count != 6 ||
-        route->parameter_count != 7 ||
-        route->constant_byte_length != sizeof(float) ||
-        fusion == route->supports.end() ||
-        fusion->second !=
-            "FLASH_ATTN_CONT_SIGMOID_MUL_EPILOGUE") {
+    if (!ggml_backend_hrx_match_fa_gate_epilogue(
+            device_context, node, &match, &request)) {
         return false;
     }
 
@@ -5425,8 +5498,7 @@ static bool ggml_backend_hrx_make_fa_gate_epilogue_request(
 // Row-wise norm whose source is a strided view and whose destination is dense.
 // The row index is decomposed into (i1,i2,i3) inside the kernel and s1/s2/s3 are
 // applied independently, so this covers padding between rows *and* between
-// planes -- a per-head slice of a fused projection, which is what every norm in
-// the Qwen3.6 graph reads.
+// planes, including per-head slices of fused projections.
 static bool ggml_backend_hrx_make_strided_norm_request(
         ggml_backend_hrx_device_context * device_context,
         const char * op_name,
@@ -5474,8 +5546,8 @@ static bool ggml_backend_hrx_make_strided_norm_request(
     return true;
 }
 
-// L2_NORM normalizes the convolved q and k projections in every Gated-DeltaNet
-// layer, so it appears twice per SSM layer and had no builder.
+// L2_NORM uses the same dense row-wise contract as RMS_NORM, with its own
+// catalog operation and route.
 static bool ggml_backend_hrx_make_l2_norm_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
@@ -5798,6 +5870,14 @@ static bool ggml_backend_hrx_make_set_rows_request(
             ggml_nelements(node->src[0]) != ggml_nelements(cont)) {
             return false;
         }
+        ggml_backend_hrx_direct_fusion_match graph_match = {};
+        if (!ggml_backend_hrx_match_direct_fusion_graph(
+                device_context->current_graph, node, &graph_match,
+                device_context->current_node_index) ||
+            graph_match.kind !=
+                ggml_backend_hrx_direct_fusion_kind::cont_set_rows) {
+            return false;
+        }
 
         ggml_backend_hrx_dispatch_request request = {};
         request.problem.op = "SET_ROWS";
@@ -5863,6 +5943,14 @@ static bool ggml_backend_hrx_make_set_rows_request(
             node->src[0]->nb[0] != sizeof(float) ||
             node->src[0]->nb[1] != rope->nb[2] ||
             node->ne[0] != rope->ne[0] * rope->ne[1]) {
+            return false;
+        }
+        ggml_backend_hrx_direct_fusion_match graph_match = {};
+        if (!ggml_backend_hrx_match_direct_fusion_graph(
+                device_context->current_graph, node, &graph_match,
+                device_context->current_node_index) ||
+            graph_match.kind !=
+                ggml_backend_hrx_direct_fusion_kind::rope_set_rows) {
             return false;
         }
 
@@ -6013,6 +6101,14 @@ static bool ggml_backend_hrx_make_mul_mat_f16_cont_request(
         node->ne[3] != 1) {
         return false;
     }
+    ggml_backend_hrx_direct_fusion_match graph_match = {};
+    if (!ggml_backend_hrx_match_direct_fusion_graph(
+            device_context->current_graph, node, &graph_match,
+            device_context->current_node_index) ||
+        graph_match.kind !=
+            ggml_backend_hrx_direct_fusion_kind::mul_mat_f16_cont) {
+        return false;
+    }
 
     out_request->problem.op = "CONT";
     out_request->problem.supports["layout"] = "decode_kqv_permute_contiguous_noalias";
@@ -6070,6 +6166,14 @@ static bool ggml_backend_hrx_make_softmax_kqv_request(
         node->ne[0] != d * nheads || node->ne[1] != n || node->ne[2] != 1 || node->ne[3] != 1) {
         return false;
     }
+    ggml_backend_hrx_direct_fusion_match graph_match = {};
+    if (!ggml_backend_hrx_match_direct_fusion_graph(
+            device_context->current_graph, node, &graph_match,
+            device_context->current_node_index) ||
+        graph_match.kind !=
+            ggml_backend_hrx_direct_fusion_kind::softmax_kqv) {
+        return false;
+    }
 
     ggml_backend_hrx_dispatch_request request = {};
     request.problem.op = "CONT";
@@ -6105,10 +6209,8 @@ static bool ggml_backend_hrx_make_softmax_kqv_request(
 
 // Gather a strided f32 source into a flat contiguous destination of the same
 // element count. Shared by CONT and CPY: ggml labels the operation differently
-// depending on how the graph was built, but the kernel is the same. llama.cpp
-// expresses the GDN conv-state window shift as a CPY from a strided view
-// (ne=[3,8192], nb1=16 -- three floats out of every four) into a flat buffer,
-// which is exactly the flattening ggml_cont_2d case.
+// depending on how the graph was built, but the kernel is the same. This covers
+// narrow strided views copied into a flat buffer, the ggml_cont_2d case.
 static bool ggml_backend_hrx_make_strided_flatten_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * src,
@@ -6258,9 +6360,8 @@ static bool ggml_backend_hrx_make_cpy_request(
         return true;
     }
     // A same-type copy is a CONT by another name. The catalog carries only an
-    // f32->f16 CPY route, so routing these to the CONT kernels is what lets the
-    // recurrent-state write-back (cache_s_l0 <- new_state, 524288 f32) run on
-    // HRX instead of aborting the scheduler.
+    // f32->f16 CPY route, so route same-type recurrent-state write-backs through
+    // the compatible strided CONT implementation.
     if (node->src[0]->type == node->type &&
         ggml_backend_hrx_make_strided_flatten_request(
             device_context, node->src[0], node, out_request)) {
@@ -6464,6 +6565,14 @@ static bool ggml_backend_hrx_make_mul_mat_q4_k_swiglu_request(
         node->ne[0] != rows || ggml_backend_hrx_tensor_row_count(node) != cols) {
         return false;
     }
+    ggml_backend_hrx_direct_fusion_match graph_match = {};
+    if (!ggml_backend_hrx_match_direct_fusion_graph(
+            device_context->current_graph, node, &graph_match,
+            device_context->current_node_index) ||
+        graph_match.kind !=
+            ggml_backend_hrx_direct_fusion_kind::mul_mat_q4_k_swiglu) {
+        return false;
+    }
 
     ggml_backend_hrx_dispatch_request request = {};
     request.problem.op = "GLU";
@@ -6500,7 +6609,7 @@ struct ggml_backend_hrx_mul_mat_id_swiglu_match {
     const ggml_tensor * down = nullptr;
 };
 
-// Exact Qwen MoE gate/up -> SwiGLU topology used by the terminal epilogue.
+// MoE gate/up -> SwiGLU topology used by the terminal epilogue.
 // Gate remains materialized. The later up projection is computed
 // by the GLU dispatch and writes the GLU destination directly, so only up may
 // become dead.
@@ -6532,6 +6641,8 @@ static bool ggml_backend_hrx_match_current_mul_mat_id_swiglu(
         gate->type != GGML_TYPE_F32 ||
         up->type != GGML_TYPE_F32 ||
         node->type != GGML_TYPE_F32 ||
+        !ggml_backend_hrx_graph_value_is_private_to_consumer(
+            device_context->current_graph, up, node) ||
         !ggml_is_contiguous(gate->src[0]) ||
         !ggml_is_contiguous(up->src[0]) ||
         !ggml_is_contiguous(gate->src[1]) ||
@@ -6543,25 +6654,34 @@ static bool ggml_backend_hrx_match_current_mul_mat_id_swiglu(
         return false;
     }
 
+    const ggml_tensor * gate_weight = gate->src[0];
+    const ggml_tensor * up_weight = up->src[0];
     const ggml_tensor * rhs = up->src[1];
     const ggml_tensor * ids = up->src[2];
-    // Restrict the production route to the measured PP512 shape. Besides
-    // keeping the topology proof narrow, these stride checks
-    // ensure the gate side-load uses the same dense output index as up.
-    if (up->src[0]->ne[0] != 2048 || up->src[0]->ne[1] != 512 ||
-        up->src[0]->ne[2] != 256 || up->src[0]->ne[3] != 1 ||
-        rhs->ne[0] != 2048 || rhs->ne[1] != 1 ||
-        rhs->ne[2] != 512 || rhs->ne[3] != 1 ||
-        ids->ne[0] != 8 || ids->ne[1] != 512 ||
+    const int64_t k = up_weight->ne[0];
+    const int64_t rows = up_weight->ne[1];
+    const int64_t nexperts = up_weight->ne[2];
+    const int64_t nselected = ids->ne[0];
+    const int64_t ntokens = ids->ne[1];
+    // The catalog owns specialization dimensions. Admission here proves only
+    // the tensor-to-tensor layout relationships used by the fused route.
+    if (k <= 0 || rows <= 0 || nexperts <= 0 ||
+        nselected <= 0 || nselected > nexperts || ntokens <= 0 ||
+        !ggml_are_same_shape(gate_weight, up_weight) ||
+        up_weight->ne[3] != 1 ||
+        rhs->ne[0] != k || rhs->ne[1] != 1 ||
+        rhs->ne[2] != ntokens || rhs->ne[3] != 1 ||
+        ids->ne[0] != nselected || ids->ne[1] != ntokens ||
         ids->ne[2] != 1 || ids->ne[3] != 1 ||
-        node->ne[0] != 512 || node->ne[1] != 8 ||
-        node->ne[2] != 512 || node->ne[3] != 1 ||
+        node->ne[0] != rows || node->ne[1] != nselected ||
+        node->ne[2] != ntokens || node->ne[3] != 1 ||
         rhs->nb[0] != sizeof(float) ||
-        rhs->nb[2] != 2048 * sizeof(float) ||
+        rhs->nb[2] != ggml_row_size(rhs->type, k) ||
         ids->nb[0] != sizeof(int32_t) ||
-        ids->nb[1] != 256 * sizeof(int32_t) ||
         node->nb[0] != sizeof(float) ||
-        node->nb[2] != 4096 * sizeof(float)) {
+        node->nb[2] !=
+            ggml_row_size(node->type, rows) *
+                static_cast<size_t>(nselected)) {
         return false;
     }
 
@@ -6636,6 +6756,40 @@ static bool ggml_backend_hrx_match_current_mul_mat_id_swiglu(
     return true;
 }
 
+static bool ggml_backend_hrx_make_mul_mat_id_swiglu_fusion_request(
+        ggml_backend_hrx_device_context * device_context,
+        const ggml_tensor * node,
+        const ggml_backend_hrx_mul_mat_id_swiglu_match & match,
+        const char * fusion,
+        ggml_backend_hrx_dispatch_request * out_request) {
+    if (!device_context || !node || !match.gate || !match.up ||
+        !match.down || !fusion || !out_request) {
+        return false;
+    }
+    ggml_backend_hrx_dispatch_request request = {};
+    if (!ggml_backend_hrx_make_mul_mat_id_request(
+            device_context, match.up, &request) ||
+        request.tensors.size() != 4) {
+        return false;
+    }
+    request.problem.supports["fusion"] = fusion;
+    // Direct bindings precede all prepass outputs:
+    //   up weight, hidden, ids, GLU dst, materialized gate,
+    //   qact payload/scales/sums, MMID table.
+    request.tensors[3] = node;
+    request.tensors.push_back(match.gate);
+    ggml_backend_hrx_add_tensor_facts(
+        &request.problem, "dst", node);
+    ggml_backend_hrx_add_tensor_facts(
+        &request.problem, "gate", match.gate);
+    *out_request = std::move(request);
+    return true;
+}
+
+static bool ggml_backend_hrx_terminal_qact_producer_route_matches(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request);
+
 static bool ggml_backend_hrx_make_mul_mat_id_swiglu_request(
         ggml_backend_hrx_device_context * device_context,
         const ggml_tensor * node,
@@ -6650,12 +6804,6 @@ static bool ggml_backend_hrx_make_mul_mat_id_swiglu_request(
         return false;
     }
 
-    ggml_backend_hrx_dispatch_request request = {};
-    if (!ggml_backend_hrx_make_mul_mat_id_request(
-            device_context, match.up, &request) ||
-        request.tensors.size() != 4) {
-        return false;
-    }
     const auto * terminal_qact_layer =
         ggml_backend_hrx_find_terminal_qact_layer(
             device_context->current_terminal_qact_plan, node);
@@ -6666,51 +6814,20 @@ static bool ggml_backend_hrx_make_mul_mat_id_swiglu_request(
     const char * fusion_key = terminal_qact
         ? "MUL_MAT_ID_SWIGLU_Q5_DOWN_QACT_EPILOGUE"
         : "MUL_MAT_ID_SWIGLU_EPILOGUE";
-    request.problem.supports["fusion"] = fusion_key;
-    // Direct bindings precede all prepass outputs:
-    //   up weight, hidden, ids, GLU dst, materialized gate,
-    //   qact payload/scales/sums, MMID table.
-    request.tensors[3] = node;
-    request.tensors.push_back(match.gate);
-    ggml_backend_hrx_add_tensor_facts(&request.problem, "dst", node);
-    ggml_backend_hrx_add_tensor_facts(&request.problem, "gate", match.gate);
+    ggml_backend_hrx_dispatch_request request = {};
+    if (!ggml_backend_hrx_make_mul_mat_id_swiglu_fusion_request(
+            device_context, node, match, fusion_key, &request)) {
+        return false;
+    }
 
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(&problem, request.tensors);
     const auto * route =
-        device_context->reg_context && device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    const auto fusion_it =
-        route ? route->supports.find("fusion") : decltype(route->supports.find("fusion")){};
-    const bool exact_terminal_qact_route =
+        ggml_backend_hrx_find_request_route(device_context, request);
+    const bool terminal_qact_route_matches =
         !terminal_qact ||
-        (route &&
-         route->id ==
-             "mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_"
-             "swiglu_q5_down_qact" &&
-         route->source_id ==
-             "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact" &&
-         route->artifact_id ==
-             "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_"
-             "q5_down_qact_loombc" &&
-         route->root_symbol ==
-             "@hrx2_mul_mat_id_q4_k_f32_mmqt_"
-             "swiglu_q5_down_qact" &&
-         route->export_name ==
-             "hrx2_mul_mat_id_q4_k_f32_mmqt_"
-             "swiglu_q5_down_qact" &&
-         route->prepasses.size() == 2 &&
-         route->prepasses[0].artifact_id ==
-             "quant_act_q8_loombc" &&
-         route->prepasses[1].artifact_id ==
-             "mmid_table_loombc" &&
-         route->prepasses[1].scratch_class == "mmid");
-    if (!route || route->binding_count != 9 ||
-        fusion_it == route->supports.end() ||
-        fusion_it->second != request.problem.supports["fusion"] ||
-        !exact_terminal_qact_route) {
+        ggml_backend_hrx_terminal_qact_producer_route_matches(
+            route, request);
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
+        !terminal_qact_route_matches) {
         return false;
     }
 
@@ -6721,82 +6838,55 @@ static bool ggml_backend_hrx_make_mul_mat_id_swiglu_request(
     return true;
 }
 
-static bool ggml_backend_hrx_terminal_qact_producer_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id !=
-            "mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_pre_tbl_"
-            "swiglu_q5_down_qact" ||
-        route->source_id !=
-            "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_q5_down_qact" ||
-        route->artifact_id !=
-            "mul_mat_id_q4_k_f32_mmqt_pre_swiglu_"
-            "q5_down_qact_loombc" ||
-        route->root_symbol !=
-            "@hrx2_mul_mat_id_q4_k_f32_mmqt_"
-            "swiglu_q5_down_qact" ||
-        route->export_name !=
-            "hrx2_mul_mat_id_q4_k_f32_mmqt_"
-            "swiglu_q5_down_qact" ||
-        route->binding_count != 9 ||
-        route->parameter_count != 9 ||
-        route->constant_byte_length != 0 ||
-        route->prepasses.size() != 2) {
-        return false;
-    }
-    const auto fusion = route->supports.find("fusion");
-    const auto & qact = route->prepasses[0];
-    const auto & table = route->prepasses[1];
-    return fusion != route->supports.end() &&
-           fusion->second ==
-               "MUL_MAT_ID_SWIGLU_Q5_DOWN_QACT_EPILOGUE" &&
-           qact.enabled &&
-           qact.artifact_id == "quant_act_q8_loombc" &&
-           qact.root_symbol == "@hrx2_quant_act_q8" &&
-           qact.src_index == 1 &&
-           qact.scratch_class.empty() &&
-           table.enabled &&
-           table.artifact_id == "mmid_table_loombc" &&
-           table.root_symbol == "@hrx2_mmid_table" &&
-           table.src_index == 2 &&
+static bool ggml_backend_hrx_mmid_table_prepass_matches(
+        const ggml_backend_hrx_catalog_prepass & table) {
+    return table.enabled &&
+           table.src_indices.size() == 1 &&
+           table.src_indices[0] == 2 &&
+           table.dst_index == -1 &&
            table.bytes_per_element == 8 &&
+           table.scratch_element_sources.size() == 3 &&
+           table.scratch_element_sources[0] ==
+               "shape.mul_mat_id.nexperts" &&
+           table.scratch_element_sources[1] ==
+               "shape.mul_mat_id.ntokens" &&
+           table.scratch_element_sources[2] ==
+               "shape.mul_mat_id.nselected" &&
            table.scratch_class == "mmid";
 }
 
-static bool ggml_backend_hrx_terminal_qact_consumer_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id !=
-            "mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tbl_"
-            "down_group4_terminal_qact" ||
-        route->source_id !=
-            "mul_mat_id_q5_k_f32_mmqt_down_group4_terminal_qact" ||
-        route->artifact_id !=
-            "mul_mat_id_q5_k_f32_mmqt_down_group4_"
-            "terminal_qact_loombc" ||
-        route->root_symbol !=
-            "@hrx2_mul_mat_id_q5_k_f32_mmqt_"
-            "down_group4_terminal_qact" ||
-        route->export_name !=
-            "hrx2_mul_mat_id_q5_k_f32_mmqt_"
-            "down_group4_terminal_qact" ||
-        route->binding_count != 5 ||
-        route->parameter_count != 5 ||
-        route->constant_byte_length != 0 ||
+static bool ggml_backend_hrx_terminal_qact_producer_route_matches(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
+        route->prepasses.size() != 2) {
+        return false;
+    }
+    const auto & qact = route->prepasses[0];
+    const auto & table = route->prepasses[1];
+    return qact.enabled &&
+           qact.src_indices.size() == 1 &&
+           qact.src_indices[0] == 1 &&
+           qact.dst_index == -1 &&
+           qact.bytes_per_element == 0 &&
+           qact.scratch_element_sources.size() == 2 &&
+           qact.scratch_element_sources[0] ==
+               "shape.mul_mat_id.src1_token_stride" &&
+           qact.scratch_element_sources[1] ==
+               "shape.mul_mat_id.ntokens" &&
+           qact.scratch_class.empty() &&
+           ggml_backend_hrx_mmid_table_prepass_matches(table);
+}
+
+static bool ggml_backend_hrx_terminal_qact_consumer_route_matches(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
         route->prepasses.size() != 1) {
         return false;
     }
-    const auto fusion = route->supports.find("fusion");
-    const auto & table = route->prepasses[0];
-    return fusion != route->supports.end() &&
-           fusion->second ==
-               "MUL_MAT_ID_Q5_DOWN_TERMINAL_QACT" &&
-           table.enabled &&
-           table.artifact_id == "mmid_table_loombc" &&
-           table.root_symbol == "@hrx2_mmid_table" &&
-           table.src_index == 2 &&
-           table.bytes_per_element == 8 &&
-           table.scratch_class == "mmid";
+    return ggml_backend_hrx_mmid_table_prepass_matches(
+        route->prepasses[0]);
 }
 
 static bool ggml_backend_hrx_make_terminal_qact_producer_request(
@@ -6806,23 +6896,18 @@ static bool ggml_backend_hrx_make_terminal_qact_producer_request(
         ggml_backend_hrx_mul_mat_id_swiglu_match * out_match) {
     ggml_backend_hrx_dispatch_request request = {};
     ggml_backend_hrx_mul_mat_id_swiglu_match match = {};
-    if (!ggml_backend_hrx_make_mul_mat_id_swiglu_request(
-            device_context, node, &request, &match)) {
+    if (!ggml_backend_hrx_match_current_mul_mat_id_swiglu(
+            device_context, node, &match) ||
+        !ggml_backend_hrx_make_mul_mat_id_swiglu_fusion_request(
+            device_context, node, match,
+            "MUL_MAT_ID_SWIGLU_Q5_DOWN_QACT_EPILOGUE",
+            &request)) {
         return false;
     }
-    request.problem.supports["fusion"] =
-        "MUL_MAT_ID_SWIGLU_Q5_DOWN_QACT_EPILOGUE";
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
     const auto * route =
-        device_context->reg_context &&
-                device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    if (!ggml_backend_hrx_terminal_qact_producer_route_is_exact(
-            route)) {
+        ggml_backend_hrx_find_request_route(device_context, request);
+    if (!ggml_backend_hrx_terminal_qact_producer_route_matches(
+            route, request)) {
         return false;
     }
     *out_request = std::move(request);
@@ -6844,17 +6929,10 @@ static bool ggml_backend_hrx_make_terminal_qact_consumer_request(
     }
     request.problem.supports["fusion"] =
         "MUL_MAT_ID_Q5_DOWN_TERMINAL_QACT";
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
     const auto * route =
-        device_context->reg_context &&
-                device_context->reg_context->catalog
-            ? ggml_backend_hrx_catalog_find_route(
-                  *device_context->reg_context->catalog, problem)
-            : nullptr;
-    if (!ggml_backend_hrx_terminal_qact_consumer_route_is_exact(
-            route)) {
+        ggml_backend_hrx_find_request_route(device_context, request);
+    if (!ggml_backend_hrx_terminal_qact_consumer_route_matches(
+            route, request)) {
         return false;
     }
     *out_request = std::move(request);
@@ -6972,7 +7050,7 @@ static bool ggml_backend_hrx_make_dispatch_request(
                 return ggml_backend_hrx_make_ssm_conv_state_cache_request(
                     device_context, node, *layer, out_request);
             }
-            // The PP512 direct-window request is installed only by its exact
+            // The direct-window request is installed only by its exact
             // graph plan. Outside that plan, materialize the window and use the
             // ordinary convolution; selecting the direct-pieces route here is
             // unsafe when graph scheduling reuses either source span.
@@ -7671,6 +7749,51 @@ static bool ggml_backend_hrx_decimal_equal(
            std::memcmp(storage.data(), text.data(), text.size()) == 0;
 }
 
+static bool ggml_backend_hrx_resolved_specialization_matches(
+        const ggml_backend_hrx_catalog_route & route,
+        const ggml_backend_hrx_catalog_problem & problem,
+        const ggml_backend_hrx_device_context::resolved_dispatch & memo) {
+    if (!memo.compiled || memo.compiled->route != &route ||
+        memo.bindings.size() != route.bindings.size() ||
+        memo.workload.size() !=
+            route.workload_argument_sources.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < route.bindings.size(); ++i) {
+        const auto & source = route.bindings[i];
+        const auto & resolved = memo.bindings[i];
+        if (resolved.key != source.key) {
+            return false;
+        }
+        if (!source.value.empty()) {
+            if (resolved.value != source.value) {
+                return false;
+            }
+            continue;
+        }
+        const auto value = problem.shape.find(source.shape_source);
+        if (value == problem.shape.end() ||
+            !ggml_backend_hrx_decimal_equal(
+                resolved.value, value->second)) {
+            return false;
+        }
+    }
+    for (size_t i = 0;
+         i < route.workload_argument_sources.size(); ++i) {
+        const std::string & source =
+            route.workload_argument_sources[i];
+        const std::string key =
+            source.compare(0, 6, "shape.") == 0
+                ? source.substr(6) : source;
+        const auto value = problem.shape.find(key);
+        if (value == problem.shape.end() ||
+            memo.workload[i] != value->second) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool ggml_backend_hrx_resolved_prepass_bindings_are_consistent(
         const ggml_backend_hrx_device_context::resolved_prepass & cached,
         const std::unordered_map<std::string, int64_t> & shape) {
@@ -7962,32 +8085,13 @@ static bool ggml_backend_hrx_dispatch_node(
     const uint64_t node_signature = ggml_backend_hrx_node_signature(node);
     auto memo_it = device_context->resolved_dispatches.find(node);
     // These requests depend on surrounding graph topology, which is not in
-    // node_signature. In particular, warmup and PP512 can reuse tensor
-    // addresses and identical direct shapes while only PP512 has the exact
-    // fusion chain. Rebuild their request while a graph is active rather than
-    // reusing an ordinary route resolved for a different graph.
+    // node_signature. Different graphs can reuse tensor addresses and direct
+    // shapes while only one has the exact fusion chain.
     const bool possible_gdn_terminal_mul =
         node->op == GGML_OP_MUL &&
         node->src[0] && node->src[1] &&
         node->src[1]->op == GGML_OP_UNARY &&
-        ggml_get_unary_op(node->src[1]) == GGML_UNARY_OP_SILU &&
-        node->ne[0] == 128 &&
-        ggml_backend_hrx_tensor_row_count(node) == 16384 &&
-        node->src[0]->ne[0] == 128 &&
-        ggml_backend_hrx_tensor_row_count(node->src[0]) == 16384 &&
-        node->src[1]->ne[0] == 128 &&
-        ggml_backend_hrx_tensor_row_count(node->src[1]) == 16384;
-    const bool possible_decode_gdn_terminal_mul =
-        node->op == GGML_OP_MUL &&
-        node->src[0] && node->src[1] &&
-        node->src[1]->op == GGML_OP_UNARY &&
-        ggml_get_unary_op(node->src[1]) == GGML_UNARY_OP_SILU &&
-        node->ne[0] == 128 && node->ne[1] == 32 &&
-        node->ne[2] == 1 && node->ne[3] == 1 &&
-        node->src[0]->ne[0] == 128 && node->src[0]->ne[1] == 32 &&
-        node->src[0]->ne[2] == 1 && node->src[0]->ne[3] == 1 &&
-        node->src[1]->ne[0] == 128 && node->src[1]->ne[1] == 32 &&
-        node->src[1]->ne[2] == 1 && node->src[1]->ne[3] == 1;
+        ggml_get_unary_op(node->src[1]) == GGML_UNARY_OP_SILU;
     const bool possible_fa_terminal_mul =
         node->op == GGML_OP_MUL &&
         node->src[0] && node->src[1] &&
@@ -7997,80 +8101,194 @@ static bool ggml_backend_hrx_dispatch_node(
         node->src[1]->op == GGML_OP_UNARY &&
         ggml_get_unary_op(node->src[1]) == GGML_UNARY_OP_SIGMOID &&
         node->src[1]->src[0] &&
-        node->src[1]->src[0]->op == GGML_OP_CONT &&
-        node->ne[0] == 4096 && node->ne[1] == 512 &&
-        node->ne[2] == 1 && node->ne[3] == 1;
-    const bool possible_recurrent_ssm =
-        node->op == GGML_OP_SSM_CONV &&
-        node->ne[0] == 8192 && node->ne[1] == 1 &&
-        node->ne[2] == 1 && node->ne[3] == 1 &&
-        node->src[1] &&
-        node->src[1]->ne[0] == 4 &&
-        node->src[1]->ne[1] == 8192 &&
-        node->src[1]->ne[2] == 1 &&
-        node->src[1]->ne[3] == 1;
-    const bool possible_recurrent_gdn =
-        node->op == GGML_OP_GATED_DELTA_NET &&
-        node->src[2] &&
-        node->src[2]->ne[0] == 128 &&
-        node->src[2]->ne[1] == 32 &&
-        node->src[2]->ne[2] == 1 &&
-        node->src[2]->ne[3] == 1;
-    const bool possible_recurrent_node =
-        possible_recurrent_ssm || possible_recurrent_gdn;
-    const bool possible_gdn_qk_scale =
-        node->op == GGML_OP_GATED_DELTA_NET &&
-        node->src[2] &&
-        node->src[2]->ne[0] == 128 &&
-        node->src[2]->ne[1] == 32 &&
-        node->src[2]->ne[2] == 512 &&
-        node->src[2]->ne[3] == 1;
-    const auto * recurrent_layer =
-        ggml_backend_hrx_find_recurrent_cache_layer(
-            device_context, node);
+        node->src[1]->src[0]->op == GGML_OP_CONT;
+    const bool possible_mul_mat_id_swiglu =
+        node->op == GGML_OP_GLU &&
+        ggml_get_glu_op(node) == GGML_GLU_OP_SWIGLU &&
+        node->src[0] && node->src[1] &&
+        node->src[0]->op == GGML_OP_MUL_MAT_ID &&
+        node->src[1]->op == GGML_OP_MUL_MAT_ID;
+    const bool recurrent_op =
+        node->op == GGML_OP_SSM_CONV ||
+        node->op == GGML_OP_GATED_DELTA_NET;
+    const auto * recurrent_layer = recurrent_op
+        ? ggml_backend_hrx_find_recurrent_cache_layer(
+              device_context, node)
+        : nullptr;
     const auto * gdn_qk_scale_layer =
-        ggml_backend_hrx_find_gdn_qk_scale_layer(
-            device_context, node);
-    const bool possible_moe_router_tail_terminal =
+        node->op == GGML_OP_GATED_DELTA_NET
+            ? ggml_backend_hrx_find_gdn_qk_scale_layer(
+                  device_context, node)
+            : nullptr;
+    const auto * moe_router_tail_layer =
         node->op == GGML_OP_ADD &&
-        node->ne[0] == 2048 &&
-        (node->ne[1] == 1 || node->ne[1] == 512) &&
-        node->ne[2] == 1 && node->ne[3] == 1;
-    const bool possible_terminal_qact_down =
-        node->op == GGML_OP_MUL_MAT_ID &&
-        node->src[0] && node->src[1] && node->src[2] &&
-        node->src[0]->type == GGML_TYPE_Q5_K &&
-        node->src[0]->ne[0] == 512 &&
-        node->src[0]->ne[1] == 2048 &&
-        node->src[0]->ne[2] == 256 &&
-        node->src[1]->ne[0] == 512 &&
-        node->src[1]->ne[1] == 8 &&
-        node->src[1]->ne[2] == 512 &&
-        node->src[2]->ne[0] == 8 &&
-        node->src[2]->ne[1] == 512;
+                ggml_backend_hrx_moe_router_tail_candidate_domain(node)
+            ? ggml_backend_hrx_find_moe_router_tail_layer(
+                  device_context->current_moe_router_tail_plan, node)
+            : nullptr;
+    const bool possible_shared_expert_spine =
+        node->op == GGML_OP_ADD &&
+        node->src[1] && node->src[1]->op == GGML_OP_MUL &&
+        node->src[1]->src[0] &&
+        node->src[1]->src[0]->op == GGML_OP_MUL_MAT &&
+        node->src[1]->src[1] &&
+        node->src[1]->src[1]->op == GGML_OP_UNARY &&
+        ggml_get_unary_op(node->src[1]->src[1]) ==
+            GGML_UNARY_OP_SIGMOID;
+    const auto * shared_expert_terminal_layer =
+        possible_shared_expert_spine
+            ? ggml_backend_hrx_find_shared_expert_terminal_layer(
+                  device_context->current_shared_expert_terminal_plan,
+                  node)
+            : nullptr;
+    const auto * ssm_conv_silu_window_layer =
+        node->op == GGML_OP_CONCAT &&
+                device_context->ssm_conv_silu_plan
+            ? ggml_backend_hrx_find_active_ssm_conv_silu_layer(
+                  device_context, node)
+            : nullptr;
+    const bool terminal_qact_op =
+        node->op == GGML_OP_GLU ||
+        node->op == GGML_OP_MUL_MAT_ID;
+    const bool possible_terminal_qact_spine =
+        possible_mul_mat_id_swiglu ||
+        (node->op == GGML_OP_MUL_MAT_ID &&
+         ggml_backend_hrx_terminal_qact_candidate_domain(node));
+    const auto * terminal_qact_layer = possible_terminal_qact_spine
+        ? ggml_backend_hrx_find_terminal_qact_layer(
+              device_context->current_terminal_qact_plan, node)
+        : nullptr;
+    bool memo_recurrent = false;
+    bool memo_gdn_qk_scale = false;
+    bool memo_moe_router_tail = false;
+    bool memo_shared_expert_terminal = false;
+    bool memo_ssm_conv_silu_window = false;
+    bool memo_gdn_terminal_mul = false;
+    bool memo_fa_terminal_mul = false;
+    bool memo_mul_mat_id_swiglu = false;
+    bool memo_terminal_qact = false;
+    const bool possible_direct_fusion_node =
+        ggml_backend_hrx_direct_fusion_candidate(node);
+    bool memo_direct_fusion = false;
+    if ((recurrent_op || node->op == GGML_OP_ADD ||
+         node->op == GGML_OP_CONCAT ||
+         node->op == GGML_OP_MUL ||
+         node->op == GGML_OP_SET_ROWS ||
+         node->op == GGML_OP_GLU ||
+         node->op == GGML_OP_CONT ||
+         terminal_qact_op) &&
+        memo_it != device_context->resolved_dispatches.end() &&
+        memo_it->second.graph_uid != 0 &&
+        memo_it->second.route) {
+        const auto fusion =
+            memo_it->second.route->supports.find("fusion");
+        if (fusion != memo_it->second.route->supports.end()) {
+            memo_recurrent =
+                fusion->second == "SSM_CONV_STATE_CACHE_DECODE" ||
+                fusion->second ==
+                    "GATED_DELTA_NET_STATE_CACHE_DECODE";
+            memo_gdn_qk_scale =
+                fusion->second ==
+                    "GATED_DELTA_NET_QK_L2_FULL_HEAD";
+            memo_moe_router_tail =
+                fusion->second == "ADD_CHAIN_SLICE_SUM";
+            memo_shared_expert_terminal =
+                fusion->second ==
+                    "MUL_MAT_SHARED_EXPERT_SIGMOID_MUL_ADD_EPILOGUE";
+            memo_gdn_terminal_mul =
+                fusion->second ==
+                    "MUL_MAT_GDN_SILU_MUL_EPILOGUE" ||
+                fusion->second ==
+                    "MUL_MAT_GDN_SILU_MUL_EPILOGUE_DECODE" ||
+                fusion->second ==
+                    "MUL_MAT_GDN_RMS_SIDE_SILU_MUL_EPILOGUE";
+            memo_fa_terminal_mul =
+                fusion->second ==
+                    "FLASH_ATTN_CONT_SIGMOID_MUL_EPILOGUE";
+            memo_mul_mat_id_swiglu =
+                fusion->second == "MUL_MAT_ID_SWIGLU_EPILOGUE";
+            memo_terminal_qact =
+                fusion->second ==
+                    "MUL_MAT_ID_SWIGLU_Q5_DOWN_QACT_EPILOGUE" ||
+                fusion->second ==
+                    "MUL_MAT_ID_Q5_DOWN_TERMINAL_QACT";
+        }
+        const auto layout =
+            memo_it->second.route->supports.find("layout");
+        memo_ssm_conv_silu_window =
+            memo_it->second.route->op == "CONCAT" &&
+            memo_it->second.route->family == "concat_window_tail" &&
+            layout != memo_it->second.route->supports.end() &&
+            layout->second == "conv_window_state_x61_snapshot";
+        memo_direct_fusion =
+            ggml_backend_hrx_direct_fusion_family(
+                memo_it->second.route);
+    }
+    const bool possible_recurrent_node =
+        recurrent_layer != nullptr || memo_recurrent;
+    const bool possible_gdn_qk_scale =
+        gdn_qk_scale_layer != nullptr || memo_gdn_qk_scale;
+    const bool possible_moe_router_tail_terminal =
+        moe_router_tail_layer != nullptr ||
+        memo_moe_router_tail;
+    const bool possible_shared_expert_terminal =
+        shared_expert_terminal_layer != nullptr ||
+        memo_shared_expert_terminal;
+    const bool possible_ssm_conv_silu_window =
+        ssm_conv_silu_window_layer != nullptr ||
+        memo_ssm_conv_silu_window;
+    const bool possible_terminal_qact_node =
+        terminal_qact_layer != nullptr ||
+        memo_terminal_qact;
     const bool graph_sensitive_fusion_node =
         device_context->current_graph &&
         (possible_recurrent_node ||
          possible_gdn_qk_scale ||
          possible_gdn_terminal_mul ||
-         possible_decode_gdn_terminal_mul ||
+         memo_gdn_terminal_mul ||
          possible_fa_terminal_mul ||
+         memo_fa_terminal_mul ||
+         possible_mul_mat_id_swiglu ||
+         memo_mul_mat_id_swiglu ||
          possible_moe_router_tail_terminal ||
-         possible_terminal_qact_down ||
+         possible_shared_expert_terminal ||
+         possible_ssm_conv_silu_window ||
+         possible_terminal_qact_node ||
+         possible_direct_fusion_node ||
+         memo_direct_fusion ||
          node->op == GGML_OP_ARGSORT ||
-         node->op == GGML_OP_DIV ||
-         (node->op == GGML_OP_GLU &&
-          node->src[0] && node->src[1] &&
-          node->src[0]->op == GGML_OP_MUL_MAT_ID &&
-          node->src[1]->op == GGML_OP_MUL_MAT_ID));
+         node->op == GGML_OP_DIV);
     const uint64_t graph_uid =
         device_context->current_graph ? device_context->current_graph->uid : 0;
     const bool graph_context_matches =
         !graph_sensitive_fusion_node ||
         (graph_uid != 0 && memo_it != device_context->resolved_dispatches.end() &&
          memo_it->second.graph_uid == graph_uid &&
-         (!possible_recurrent_node || recurrent_layer != nullptr) &&
-         (!possible_gdn_qk_scale || gdn_qk_scale_layer != nullptr));
+         (!possible_recurrent_node ||
+          (recurrent_layer != nullptr) == memo_recurrent) &&
+         (!possible_gdn_qk_scale ||
+          (gdn_qk_scale_layer != nullptr) ==
+              memo_gdn_qk_scale) &&
+         (!memo_gdn_terminal_mul ||
+          possible_gdn_terminal_mul) &&
+         (!memo_fa_terminal_mul ||
+          possible_fa_terminal_mul) &&
+         (!memo_mul_mat_id_swiglu ||
+          possible_mul_mat_id_swiglu) &&
+         (!memo_direct_fusion ||
+          possible_direct_fusion_node) &&
+         (!possible_moe_router_tail_terminal ||
+          (moe_router_tail_layer != nullptr) ==
+              memo_moe_router_tail) &&
+         (!possible_shared_expert_terminal ||
+          (shared_expert_terminal_layer != nullptr) ==
+              memo_shared_expert_terminal) &&
+         (!possible_ssm_conv_silu_window ||
+          (ssm_conv_silu_window_layer != nullptr) ==
+              memo_ssm_conv_silu_window) &&
+         (!possible_terminal_qact_node ||
+          (terminal_qact_layer != nullptr) ==
+              memo_terminal_qact));
     const bool memo_hit =
         memo_it != device_context->resolved_dispatches.end() &&
         memo_it->second.signature == node_signature &&
@@ -8106,15 +8324,9 @@ static bool ggml_backend_hrx_dispatch_node(
             return false;
         }
     }
-    size_t prepass_bindings = 0;
-    for (const auto & prepass : route->prepasses) {
-        if (prepass.dst_index < 0) {
-            prepass_bindings +=
-                prepass.bytes_per_element != 0 ? 1 : 3;
-        }
-    }
-    const size_t expected_bindings = request.tensors.size() + prepass_bindings;
-    if (route->binding_count != expected_bindings || route->constant_byte_length != request.constants.size()) {
+    const size_t expected_bindings =
+        ggml_backend_hrx_request_binding_count(*route, request);
+    if (!ggml_backend_hrx_route_matches_request_abi(route, request)) {
         ggml_backend_hrx_trace_event(device_context->reg_context, {
             {"event", "route_rejected"},
             {"reason", "request_abi_mismatch"},
@@ -8703,20 +8915,6 @@ static bool ggml_backend_hrx_dispatch_node(
     return true;
 }
 
-static bool ggml_backend_hrx_graph_contains_node(
-        const ggml_cgraph * cgraph,
-        const ggml_tensor * tensor) {
-    if (!cgraph || !tensor) {
-        return false;
-    }
-    for (int i = 0; i < cgraph->n_nodes; ++i) {
-        if (cgraph->nodes[i] == tensor) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static bool ggml_backend_hrx_has_only_expected_consumers(
         const ggml_cgraph * cgraph,
         const ggml_tensor * producer,
@@ -8763,14 +8961,26 @@ static bool ggml_backend_hrx_topk_moe_graph_match_is_safe(
             match.sum_rows,
             match.clamp,
             match.div}) {
-        if (!ggml_backend_hrx_graph_contains_node(cgraph, tensor)) {
+        if (ggml_backend_hrx_graph_node_index(cgraph, tensor) < 0) {
+            return false;
+        }
+    }
+    for (const ggml_tensor * tensor : {
+            match.softmax,
+            match.probs_reshape,
+            match.argsort,
+            match.get_rows,
+            match.weights_reshape,
+            match.sum_rows,
+            match.clamp}) {
+        if (tensor->flags & GGML_TENSOR_FLAG_OUTPUT) {
             return false;
         }
     }
 
     // Every materialized producer that the fusion removes must be private to
     // this chain. The ids VIEW is intentionally exempt: the expert GEMMs consume
-    // it after the fused kernel writes its full top-8 result.
+    // it after the fused kernel writes its full top-k result.
     const bool private_chain =
         ggml_backend_hrx_has_only_expected_consumers(
             cgraph, match.softmax, match.probs_reshape, match.argsort) &&
@@ -8786,14 +8996,13 @@ static bool ggml_backend_hrx_topk_moe_graph_match_is_safe(
             cgraph, match.sum_rows, match.clamp) &&
         ggml_backend_hrx_has_only_expected_consumers(
             cgraph, match.clamp, match.div);
-    if (!private_chain || match.logits->ne[1] != 1) {
-        return private_chain;
+    if (!private_chain) {
+        return false;
     }
 
-    // Decode delays the logits read until terminal DIV, where the one-wave
-    // kernel also writes an overlapping weights output. The logits must have no
-    // other consumer, and no non-absorbed dispatch between logits and DIV may
-    // write any byte of their storage.
+    // Both variants delay the logits read: batched routing reads them at
+    // ARGSORT, while decode absorbs the whole chain and reads them at DIV.
+    // No dispatch in the extended lifetime may overwrite their storage.
     if (!ggml_backend_hrx_has_only_expected_consumers(
             cgraph, match.logits, match.softmax)) {
         return false;
@@ -8805,6 +9014,8 @@ static bool ggml_backend_hrx_topk_moe_graph_match_is_safe(
             match.logits, &logits_buffer, &logits_offset, &logits_length)) {
         return false;
     }
+    const ggml_tensor * delayed_reader =
+        match.logits->ne[1] == 1 ? match.div : match.argsort;
     bool after_logits = false;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * between = cgraph->nodes[i];
@@ -8815,7 +9026,7 @@ static bool ggml_backend_hrx_topk_moe_graph_match_is_safe(
         if (!after_logits) {
             continue;
         }
-        if (between == match.div) {
+        if (between == delayed_reader) {
             return true;
         }
         if (!between ||
@@ -8872,40 +9083,6 @@ static int ggml_backend_hrx_graph_node_index(
     return -1;
 }
 
-static bool ggml_backend_hrx_parse_exact_layer_name(
-        const ggml_tensor * tensor,
-        const char * prefix,
-        int * out_layer) {
-    if (!tensor || !prefix || !out_layer) {
-        return false;
-    }
-    const char * name = ggml_get_name(tensor);
-    const size_t prefix_length = std::strlen(prefix);
-    if (!name || std::strncmp(name, prefix, prefix_length) != 0) {
-        return false;
-    }
-    const char * first = name + prefix_length;
-    const char * last = name + std::strlen(name);
-    int layer = -1;
-    const auto parsed = std::from_chars(first, last, layer);
-    if (parsed.ec != std::errc() || parsed.ptr != last ||
-        layer < 0 || layer >= 40) {
-        return false;
-    }
-    *out_layer = layer;
-    return true;
-}
-
-static bool ggml_backend_hrx_has_exact_layer_name(
-        const ggml_tensor * tensor,
-        const char * prefix,
-        int expected_layer) {
-    int layer = -1;
-    return ggml_backend_hrx_parse_exact_layer_name(
-               tensor, prefix, &layer) &&
-           layer == expected_layer;
-}
-
 struct ggml_backend_hrx_storage_span {
     ggml_backend_buffer_t buffer = nullptr;
     size_t offset = 0;
@@ -8920,122 +9097,43 @@ static bool ggml_backend_hrx_get_storage_span(
                tensor, &out->buffer, &out->offset, &out->length);
 }
 
-static bool ggml_backend_hrx_storage_contains_at(
+static bool ggml_backend_hrx_storage_contains(
         const ggml_backend_hrx_storage_span & outer,
-        const ggml_backend_hrx_storage_span & inner,
-        size_t expected_offset) {
-    return expected_offset <= outer.length &&
-           outer.buffer == inner.buffer &&
-           inner.offset == outer.offset + expected_offset &&
-           inner.length <= outer.length - expected_offset;
+        const ggml_backend_hrx_storage_span & inner) {
+    return outer.buffer == inner.buffer &&
+           inner.offset >= outer.offset &&
+           inner.offset - outer.offset <= outer.length &&
+           inner.length <=
+               outer.length - (inner.offset - outer.offset);
 }
 
-static bool ggml_backend_hrx_route_has_zero_constraint(
-        const ggml_backend_hrx_catalog_route & route,
-        const char * source) {
-    for (const auto & constraint : route.constraints) {
-        if (constraint.source == source &&
-            constraint.has_eq_value &&
-            constraint.eq_value == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool ggml_backend_hrx_moe_router_tail_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id != "sum_slices_f32" ||
-        route->family != "sum_slices_f32" ||
-        route->op != "ADD" ||
-        route->source_id != "sum_slices_f32" ||
-        route->artifact_id != "sum_slices_f32_loombc" ||
-        route->root_symbol != "@hrx2_sum_slices_f32" ||
-        route->export_name != "hrx2_sum_slices_f32" ||
-        route->binding_count != 4 ||
-        route->parameter_count != 4 ||
-        route->constant_byte_length != 0 ||
-        route->prepasses.size() != 1 ||
-        route->constraints.size() != 2 ||
-        !ggml_backend_hrx_route_has_zero_constraint(
-            *route, "tensor_overlap.0_1") ||
-        !ggml_backend_hrx_route_has_zero_constraint(
-            *route, "tensor_overlap.0_2")) {
+static bool ggml_backend_hrx_moe_router_tail_route_matches_request(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    if (!ggml_backend_hrx_route_matches_request(route, request) ||
+        route->prepasses.size() != 1) {
         return false;
     }
     const auto & prepass = route->prepasses[0];
     return prepass.enabled &&
-           prepass.artifact_id == "sum_slices_f32_loombc" &&
-           prepass.root_symbol == "@hrx2_moe_router_snapshot_f32" &&
-           prepass.export_name == "hrx2_moe_router_snapshot_f32" &&
-           prepass.src_index == 2 &&
+           prepass.src_indices.size() == 1 &&
+           prepass.src_indices[0] == 2 &&
+           prepass.dst_index == -1 &&
            prepass.bytes_per_element == 4 &&
            prepass.element_binding_key.empty() &&
            !prepass.persistent &&
            prepass.scratch_class == "moe_router_weight_snapshot" &&
-           prepass.scratch_element_sources ==
-               std::vector<std::string>({
-                   "shape.sumslices.ntokens",
-                   "shape.sumslices.nslices",
-               });
+           prepass.scratch_element_sources.size() == 2 &&
+           prepass.scratch_element_sources[0] ==
+               "shape.sumslices.ntokens" &&
+           prepass.scratch_element_sources[1] ==
+               "shape.sumslices.nslices";
 }
 
-static const ggml_backend_hrx_catalog_route *
-ggml_backend_hrx_find_request_route(
-        ggml_backend_hrx_device_context * device_context,
-        const ggml_backend_hrx_dispatch_request & request) {
-    if (!device_context || !device_context->reg_context ||
-        !device_context->reg_context->catalog) {
-        return nullptr;
-    }
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
-    return ggml_backend_hrx_catalog_find_route(
-        *device_context->reg_context->catalog, problem);
-}
-
-static bool ggml_backend_hrx_moe_router_tail_down_route_is_exact(
-        ggml_backend_hrx_device_context * device_context,
-        const ggml_backend_hrx_catalog_route * route,
-        const ggml_tensor * down,
-        enum ggml_type weight_type,
-        int64_t ntokens) {
-    if (!device_context || !route || !down ||
-        (ntokens != 1 && ntokens != 512)) {
-        return false;
-    }
-    if (weight_type == GGML_TYPE_Q5_K) {
-        if (route->id ==
-                (ntokens == 1
-                     ? "mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tbl_"
-                       "decode_table_down_group4"
-                     : "mul_mat_id_q5_k_f32_mmq_gfx1151_wg256_tbl_"
-                       "down_group4")) {
-            return true;
-        }
-        const auto * terminal_layer =
-            ntokens == 512
-                ? ggml_backend_hrx_find_terminal_qact_layer(
-                      device_context->current_terminal_qact_plan, down)
-                : nullptr;
-        return terminal_layer &&
-               terminal_layer->down == down &&
-               ggml_backend_hrx_terminal_qact_consumer_route_is_exact(
-                   route);
-    }
-    return weight_type == GGML_TYPE_Q6_K &&
-           route->id ==
-               (ntokens == 1
-                    ? "mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl_decode_table"
-                    : "mul_mat_id_q6_k_f32_mmq_gfx1151_wg256_tbl");
-}
-
-static bool ggml_backend_hrx_moe_router_tail_topk_routes_are_exact(
+static bool ggml_backend_hrx_moe_router_tail_topk_routes_match_requests(
         ggml_backend_hrx_device_context * device_context,
         const ggml_backend_hrx_topk_moe_softmax_norm_match & match) {
-    if (match.logits->ne[1] == 512) {
+    if (match.logits->ne[1] != 1) {
         ggml_backend_hrx_dispatch_request stage = {};
         ggml_backend_hrx_dispatch_request copy = {};
         if (!ggml_backend_hrx_make_available_topk_moe_requests(
@@ -9046,36 +9144,35 @@ static bool ggml_backend_hrx_moe_router_tail_topk_routes_are_exact(
             ggml_backend_hrx_find_request_route(device_context, stage);
         const auto * copy_route =
             ggml_backend_hrx_find_request_route(device_context, copy);
-        return stage_route && copy_route &&
-               stage_route->id ==
-                   "topk_moe_softmax_norm_stage_f32_pp512_wg256" &&
-               copy_route->id ==
-                   "topk_moe_weights_copy_f32_pp512_wg256";
+        return ggml_backend_hrx_route_matches_request(
+                   stage_route, stage) &&
+               ggml_backend_hrx_route_matches_request(
+                   copy_route, copy);
     }
     ggml_backend_hrx_dispatch_request decode = {};
-    if (match.logits->ne[1] != 1 ||
-        !ggml_backend_hrx_make_available_topk_moe_decode_request(
+    if (!ggml_backend_hrx_make_available_topk_moe_decode_request(
             device_context, match, &decode)) {
         return false;
     }
     const auto * decode_route =
         ggml_backend_hrx_find_request_route(device_context, decode);
-    return decode_route &&
-           decode_route->id ==
-               "topk_moe_softmax_norm_decode_f32_tg1_wg32";
+    return ggml_backend_hrx_route_matches_request(
+        decode_route, decode);
 }
 
-static bool ggml_backend_hrx_moe_router_tail_slice_is_exact(
+static bool ggml_backend_hrx_moe_router_tail_slice_layout_is_safe(
         const ggml_tensor * slice,
         const ggml_tensor * selected,
         const ggml_tensor * dst,
-        int64_t ntokens,
         int slot) {
-    if (!slice || !selected || !dst || slot < 0 || slot >= 8 ||
+    if (!slice || !selected || !dst ||
+        slot < 0 || slot >= selected->ne[1] ||
         slice->type != GGML_TYPE_F32 ||
-        !ggml_backend_hrx_has_exact_shape(slice, 2048, ntokens) ||
-        slice->nb[0] != sizeof(float) ||
-        slice->nb[1] != 16384 * sizeof(float) ||
+        selected->type != GGML_TYPE_F32 ||
+        dst->type != GGML_TYPE_F32 ||
+        !ggml_are_same_shape(slice, dst) ||
+        slice->nb[0] != selected->nb[0] ||
+        slice->nb[1] != selected->nb[2] ||
         !ggml_backend_hrx_metadata_chain_reaches(slice, selected)) {
         return false;
     }
@@ -9086,7 +9183,7 @@ static bool ggml_backend_hrx_moe_router_tail_slice_is_exact(
         return false;
     }
     const size_t expected_offset =
-        static_cast<size_t>(slot) * 2048 * sizeof(float);
+        static_cast<size_t>(slot) * selected->nb[1];
     return slice_span.buffer == selected_span.buffer &&
            slice_span.offset == selected_span.offset + expected_offset &&
            ggml_backend_hrx_disjoint_storage_spans(slice, dst);
@@ -9100,7 +9197,9 @@ static bool ggml_backend_hrx_moe_router_tail_consumers_are_exact(
     int down_uses = 0;
     int mul_uses = 0;
     int router_uses = 0;
-    std::array<int, 6> add_uses = {};
+    if (layer.adds.empty()) {
+        return false;
+    }
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * consumer = cgraph->nodes[i];
         if (!consumer || ggml_backend_hrx_is_metadata_op(consumer) ||
@@ -9126,7 +9225,7 @@ static bool ggml_backend_hrx_moe_router_tail_consumers_are_exact(
                         (s == 0 && source == layer.adds[0]->src[0]) ||
                         (s == 1 && source == layer.adds[0]->src[1]);
                 } else {
-                    for (int add = 1; add < 7; ++add) {
+                    for (size_t add = 1; add < layer.adds.size(); ++add) {
                         if (consumer == layer.adds[add] &&
                             s == 1 &&
                             source == layer.adds[add]->src[1]) {
@@ -9147,22 +9246,11 @@ static bool ggml_backend_hrx_moe_router_tail_consumers_are_exact(
                 }
                 ++router_uses;
             }
-            for (int add = 0; add < 6; ++add) {
-                if (source == layer.adds[add]) {
-                    if (consumer != layer.adds[add + 1] || s != 0) {
-                        return false;
-                    }
-                    ++add_uses[add];
-                }
-            }
         }
     }
     return down_uses == 1 &&
-           mul_uses == 8 &&
-           router_uses == 1 &&
-           std::all_of(
-               add_uses.begin(), add_uses.end(),
-               [](int uses) { return uses == 1; });
+           mul_uses == static_cast<int>(layer.adds.size() + 1) &&
+           router_uses == 1;
 }
 
 static bool ggml_backend_hrx_moe_router_tail_source_survives(
@@ -9172,7 +9260,10 @@ static bool ggml_backend_hrx_moe_router_tail_source_survives(
         const ggml_backend_hrx_moe_router_tail_layer_plan & layer) {
     const int source_index =
         ggml_backend_hrx_graph_node_index(cgraph, source_producer);
-    const int terminal_index = layer.add_indices[6];
+    if (layer.add_indices.empty()) {
+        return false;
+    }
+    const int terminal_index = layer.add_indices.back();
     ggml_backend_hrx_storage_span source_span = {};
     if (source_index < 0 || terminal_index <= source_index ||
         !ggml_backend_hrx_get_storage_span(source, &source_span)) {
@@ -9185,7 +9276,7 @@ static bool ggml_backend_hrx_moe_router_tail_source_survives(
             continue;
         }
         bool planned_skip = false;
-        for (int add = 0; add < 6; ++add) {
+        for (size_t add = 0; add + 1 < layer.adds.size(); ++add) {
             planned_skip = planned_skip || writer == layer.adds[add];
         }
         if (planned_skip) {
@@ -9206,125 +9297,157 @@ static bool ggml_backend_hrx_moe_router_tail_source_survives(
     return true;
 }
 
+static const ggml_tensor *
+ggml_backend_hrx_moe_router_tail_slice_producer(
+        const ggml_tensor * slice) {
+    if (!slice) {
+        return nullptr;
+    }
+    if (slice->view_src && slice->view_src->op == GGML_OP_MUL) {
+        return slice->view_src;
+    }
+    for (const ggml_tensor * cur = slice;
+         cur && ggml_backend_hrx_is_metadata_op(cur);) {
+        cur = cur->src[0] ? cur->src[0] : cur->view_src;
+        if (cur && cur->op == GGML_OP_MUL) {
+            return cur;
+        }
+    }
+    return nullptr;
+}
+
+static bool ggml_backend_hrx_moe_router_tail_candidate_domain(
+        const ggml_tensor * terminal) {
+    if (!terminal || terminal->op != GGML_OP_ADD ||
+        !terminal->src[0] || !terminal->src[1] ||
+        terminal->type != GGML_TYPE_F32 ||
+        !ggml_backend_hrx_is_f32_dense(terminal)) {
+        return false;
+    }
+    const ggml_tensor * mul =
+        ggml_backend_hrx_moe_router_tail_slice_producer(
+            terminal->src[1]);
+    return mul && mul->src[0] && mul->src[1] &&
+           mul->src[0]->op == GGML_OP_MUL_MAT_ID &&
+           ggml_backend_hrx_zero_offset_source_chain_target(
+               mul->src[1], GGML_OP_DIV);
+}
+
 static bool ggml_backend_hrx_match_moe_router_tail_layer(
         ggml_backend_hrx_device_context * device_context,
         const ggml_cgraph * cgraph,
-        int layer_number,
         const ggml_tensor * terminal,
         ggml_backend_hrx_moe_router_tail_layer_plan * out_layer) {
     if (!device_context || !cgraph || !terminal || !out_layer ||
-        terminal->op != GGML_OP_ADD ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            terminal, "ffn_moe_out-", layer_number)) {
+        !ggml_backend_hrx_moe_router_tail_candidate_domain(
+            terminal)) {
         return false;
     }
 
     ggml_backend_hrx_moe_router_tail_layer_plan layer = {};
-    layer.layer = layer_number;
-    layer.add_indices.fill(-1);
     const ggml_tensor * cursor = terminal;
-    for (int add = 6; add >= 0; --add) {
-        if (!cursor || cursor->op != GGML_OP_ADD ||
-            !cursor->src[0] || !cursor->src[1] ||
-            !ggml_backend_hrx_has_exact_shape(
-                cursor, 2048, terminal->ne[1]) ||
-            !ggml_backend_hrx_is_f32_dense(cursor)) {
-            return false;
-        }
-        layer.adds[add] = cursor;
-        layer.add_indices[add] =
-            ggml_backend_hrx_graph_node_index(cgraph, cursor);
-        if (layer.add_indices[add] < 0) {
-            return false;
-        }
+    size_t add_count = 0;
+    while (cursor && cursor->op == GGML_OP_ADD &&
+           cursor->src[0] && cursor->src[1] &&
+           ggml_are_same_shape(cursor, terminal) &&
+           ggml_backend_hrx_is_f32_dense(cursor)) {
+        ++add_count;
         cursor = cursor->src[0];
     }
+    if (add_count == 0) {
+        return false;
+    }
     const ggml_tensor * first_slice = cursor;
-    const ggml_tensor * mul = nullptr;
-    if (first_slice && first_slice->view_src) {
-        mul = first_slice->view_src;
+    const ggml_tensor * mul =
+        ggml_backend_hrx_moe_router_tail_slice_producer(
+            first_slice);
+    if (!mul || !mul->src[0] || !mul->src[1]) {
+        return false;
     }
-    if (!mul) {
-        for (const ggml_tensor * cur = first_slice;
-             cur && ggml_backend_hrx_is_metadata_op(cur);) {
-            if (cur->src[0]) {
-                cur = cur->src[0];
-            } else if (cur->view_src) {
-                cur = cur->view_src;
-            } else {
-                cur = nullptr;
-            }
-            if (cur && cur->op == GGML_OP_MUL) {
-                mul = cur;
-                break;
-            }
-        }
-    }
-    if (!mul || mul->op != GGML_OP_MUL ||
-        !mul->src[0] || !mul->src[1]) {
+    if (!ggml_backend_hrx_metadata_chain_reaches(
+            first_slice, mul)) {
         return false;
     }
     const ggml_tensor * down = mul->src[0];
     const ggml_tensor * router_weights = mul->src[1];
     if (!down || down->op != GGML_OP_MUL_MAT_ID ||
         !down->src[0] || !down->src[1] || !down->src[2] ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            down, "ffn_moe_down-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            mul, "ffn_moe_weighted-", layer_number)) {
+        down->ne[1] <= 0 ||
+        static_cast<uint64_t>(down->ne[1]) != add_count + 1) {
         return false;
     }
-
+    layer.adds.resize(add_count);
+    layer.add_indices.resize(add_count);
+    cursor = terminal;
+    for (size_t remaining = add_count; remaining > 0; --remaining) {
+        const size_t add = remaining - 1;
+        if (!ggml_backend_hrx_metadata_chain_reaches(
+                cursor->src[1], mul)) {
+            return false;
+        }
+        const int index =
+            ggml_backend_hrx_graph_node_index(cgraph, cursor);
+        if (index < 0) {
+            return false;
+        }
+        layer.adds[add] = cursor;
+        layer.add_indices[add] = index;
+        cursor = cursor->src[0];
+    }
+    if (ggml_backend_hrx_graph_value_is_output(cgraph, mul)) {
+        return false;
+    }
+    for (size_t add = 0; add + 1 < layer.adds.size(); ++add) {
+        if (!ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, layer.adds[add], layer.adds[add + 1])) {
+            return false;
+        }
+    }
+    const int64_t n = terminal->ne[0];
     const int64_t ntokens = terminal->ne[1];
-    if ((ntokens != 1 && ntokens != 512) ||
-        !ggml_backend_hrx_has_exact_shape(
-            down->src[0], 512, 2048, 256) ||
-        (down->src[0]->type != GGML_TYPE_Q5_K &&
-         down->src[0]->type != GGML_TYPE_Q6_K) ||
-        !ggml_backend_hrx_has_exact_shape(
-            down->src[1], 512, 8, ntokens) ||
+    const int64_t nslices =
+        static_cast<int64_t>(layer.adds.size() + 1);
+    if (n <= 0 || ntokens <= 0 ||
+        terminal->ne[2] != 1 || terminal->ne[3] != 1 ||
+        down->src[0]->ne[0] != down->src[1]->ne[0] ||
+        down->src[0]->ne[1] != n ||
+        down->src[0]->ne[2] <= 0 ||
+        down->src[0]->ne[3] != 1 ||
+        !ggml_backend_hrx_shape_is(
+            down->src[1],
+            down->src[0]->ne[0], nslices, ntokens, 1) ||
         !ggml_backend_hrx_is_f32_dense(down->src[1]) ||
-        down->src[1]->nb[1] != 512 * sizeof(float) ||
-        down->src[1]->nb[2] != 4096 * sizeof(float) ||
-        !ggml_backend_hrx_has_exact_shape(
-            down->src[2], 8, ntokens) ||
+        !ggml_backend_hrx_shape_is(
+            down->src[2], nslices, ntokens, 1, 1) ||
         down->src[2]->type != GGML_TYPE_I32 ||
         down->src[2]->nb[0] != sizeof(int32_t) ||
-        down->src[2]->nb[1] != 256 * sizeof(int32_t) ||
-        !ggml_backend_hrx_has_exact_shape(down, 2048, 8, ntokens) ||
+        down->src[2]->nb[1] % sizeof(int32_t) != 0 ||
+        !ggml_backend_hrx_shape_is(
+            down, n, nslices, ntokens, 1) ||
         !ggml_backend_hrx_is_f32_dense(down) ||
-        down->nb[1] != 2048 * sizeof(float) ||
-        down->nb[2] != 16384 * sizeof(float) ||
-        !ggml_backend_hrx_has_exact_shape(mul, 2048, 8, ntokens) ||
+        !ggml_backend_hrx_shape_is(
+            mul, n, nslices, ntokens, 1) ||
         !ggml_backend_hrx_is_f32_dense(mul) ||
         !ggml_backend_hrx_same_storage_span(down, mul) ||
-        !ggml_backend_hrx_has_exact_shape(
-            router_weights, 1, 8, ntokens) ||
+        !ggml_backend_hrx_shape_is(
+            router_weights, 1, nslices, ntokens, 1) ||
         !ggml_backend_hrx_is_f32_dense(router_weights) ||
-        !ggml_backend_hrx_has_exact_shape(terminal, 2048, ntokens) ||
+        !ggml_backend_hrx_shape_is(
+            terminal, n, ntokens, 1, 1) ||
         !ggml_backend_hrx_is_f32_dense(terminal)) {
         return false;
     }
 
-    std::array<const ggml_tensor *, 8> slices = {};
-    slices[0] = first_slice;
-    slices[1] = layer.adds[0]->src[1];
-    for (int slot = 2; slot < 8; ++slot) {
-        if (layer.adds[slot - 1]->src[0] !=
-            layer.adds[slot - 2]) {
-            return false;
-        }
-        slices[slot] = layer.adds[slot - 1]->src[1];
+    if (!ggml_backend_hrx_moe_router_tail_slice_layout_is_safe(
+            first_slice, mul, terminal, 0)) {
+        return false;
     }
-    for (int add = 0; add < 7; ++add) {
-        if (!ggml_backend_hrx_same_storage_span(
-                layer.adds[add], terminal)) {
-            return false;
-        }
-    }
-    for (int slot = 0; slot < 8; ++slot) {
-        if (!ggml_backend_hrx_moe_router_tail_slice_is_exact(
-                slices[slot], mul, terminal, ntokens, slot)) {
+    for (size_t slot = 0; slot < layer.adds.size(); ++slot) {
+        const ggml_tensor * add = layer.adds[slot];
+        if (!ggml_backend_hrx_same_storage_span(add, terminal) ||
+            !ggml_backend_hrx_moe_router_tail_slice_layout_is_safe(
+                add->src[1], mul, terminal,
+                static_cast<int>(slot + 1))) {
             return false;
         }
     }
@@ -9338,8 +9461,9 @@ static bool ggml_backend_hrx_match_moe_router_tail_layer(
     if (!router_value ||
         !ggml_backend_hrx_match_topk_moe_early_softmax_norm(
             router_value, &topk) ||
+        topk.logits->ne[1] != ntokens ||
         !ggml_backend_hrx_topk_moe_graph_match_is_safe(cgraph, topk) ||
-        !ggml_backend_hrx_moe_router_tail_topk_routes_are_exact(
+        !ggml_backend_hrx_moe_router_tail_topk_routes_match_requests(
             device_context, topk) ||
         down->src[2] != topk.ids_view ||
         !ggml_backend_hrx_moe_router_tail_consumers_are_exact(
@@ -9347,13 +9471,18 @@ static bool ggml_backend_hrx_match_moe_router_tail_layer(
         return false;
     }
 
-    layer.selected = down;
     layer.dst = terminal;
     layer.ntokens = ntokens;
-    layer.router_source =
-        ntokens == 512 ? topk.argsort : topk.div;
-    layer.router_source_stride = ntokens == 512 ? 256 : 8;
-    layer.router_source_offset = ntokens == 512 ? 8 : 0;
+    const bool decode = topk.logits->ne[1] == 1;
+    layer.router_source = decode ? topk.div : topk.argsort;
+    if (!layer.router_source ||
+        layer.router_source->nb[1] % sizeof(float) != 0) {
+        return false;
+    }
+    layer.router_source_stride = static_cast<int64_t>(
+        layer.router_source->nb[1] / sizeof(float));
+    layer.router_source_offset =
+        decode ? 0 : topk.ids_view->ne[0];
     layer.down_index = ggml_backend_hrx_graph_node_index(cgraph, down);
     layer.mul_index = ggml_backend_hrx_graph_node_index(cgraph, mul);
     const int topk_index =
@@ -9365,7 +9494,7 @@ static bool ggml_backend_hrx_match_moe_router_tail_layer(
           layer.mul_index < layer.add_indices[0])) {
         return false;
     }
-    for (int add = 1; add < 7; ++add) {
+    for (size_t add = 1; add < layer.add_indices.size(); ++add) {
         if (layer.add_indices[add - 1] >=
             layer.add_indices[add]) {
             return false;
@@ -9381,73 +9510,71 @@ static bool ggml_backend_hrx_match_moe_router_tail_layer(
     ggml_backend_hrx_storage_span source_span = {};
     ggml_backend_hrx_storage_span router_span = {};
     if (!ggml_backend_hrx_get_storage_span(
-            layer.selected, &selected_span) ||
+            layer.down, &selected_span) ||
         !ggml_backend_hrx_get_storage_span(layer.dst, &dst_span) ||
         !ggml_backend_hrx_get_storage_span(
             layer.router_source, &source_span) ||
         !ggml_backend_hrx_get_storage_span(topk.div, &router_span) ||
-        selected_span.length !=
-            static_cast<size_t>(ntokens) * 8 * 2048 * sizeof(float) ||
-        dst_span.length !=
-            static_cast<size_t>(ntokens) * 2048 * sizeof(float) ||
         !ggml_backend_hrx_disjoint_storage_spans(
-            layer.selected, layer.dst) ||
+            layer.down, layer.dst) ||
         !ggml_backend_hrx_disjoint_storage_spans(
-            layer.selected, layer.router_source) ||
+            layer.down, layer.router_source) ||
         layer.router_source->view_src != nullptr) {
         return false;
     }
-    if (ntokens == 512) {
-        const size_t expected_source_offset =
-            layer_number == 39 ? 0 : 524288;
-        if (source_span.length != 524288 ||
-            !ggml_backend_hrx_storage_contains_at(
-                dst_span, source_span, expected_source_offset) ||
-            ((layer_number < 39) !=
-             ggml_backend_hrx_storage_contains_at(
-                 dst_span, router_span, 0)) ||
-            (layer_number == 39 &&
-             !ggml_backend_hrx_disjoint_storage_spans(
-                 topk.div, layer.dst))) {
-            return false;
-        }
-    } else {
-        const bool expected_alias = layer_number < 39;
-        const bool aliases_at_admitted_offset =
-            ggml_backend_hrx_storage_contains_at(
-                dst_span, source_span, 0) ||
-            ggml_backend_hrx_storage_contains_at(
-                dst_span, source_span, 256);
-        if (source_span.length != 32 ||
-            (expected_alias != aliases_at_admitted_offset) ||
-            (!expected_alias &&
-             !ggml_backend_hrx_disjoint_storage_spans(
-                 layer.router_source, layer.dst))) {
-            return false;
-        }
+    const size_t source_stride =
+        static_cast<size_t>(layer.router_source_stride);
+    const size_t source_offset =
+        static_cast<size_t>(layer.router_source_offset);
+    const size_t source_width = static_cast<size_t>(nslices);
+    const size_t token_count = static_cast<size_t>(ntokens);
+    if (source_stride == 0 ||
+        source_offset > source_stride ||
+        source_width > source_stride - source_offset ||
+        token_count - 1 >
+            (std::numeric_limits<size_t>::max() -
+             source_offset - source_width) /
+                source_stride ||
+        ((token_count - 1) * source_stride +
+             source_offset + source_width) >
+            source_span.length / sizeof(float) ||
+        (!ggml_backend_hrx_storage_contains(
+             dst_span, source_span) &&
+         !ggml_backend_hrx_disjoint_storage_spans(
+             layer.router_source, layer.dst)) ||
+        (!ggml_backend_hrx_storage_contains(
+             dst_span, router_span) &&
+         !ggml_backend_hrx_disjoint_storage_spans(
+             topk.div, layer.dst))) {
+        return false;
     }
 
     ggml_backend_hrx_dispatch_request down_request = {};
     if (!ggml_backend_hrx_make_mul_mat_id_request(
-            device_context, down, &down_request) ||
-        !ggml_backend_hrx_moe_router_tail_down_route_is_exact(
-            device_context,
-            ggml_backend_hrx_find_request_route(
-                device_context, down_request),
-            down,
-            down->src[0]->type, ntokens)) {
+            device_context, down, &down_request)) {
+        return false;
+    }
+    const auto * down_route =
+        ggml_backend_hrx_find_request_route(
+            device_context, down_request);
+    if (!ggml_backend_hrx_route_matches_request(
+            down_route, down_request)) {
         return false;
     }
     ggml_backend_hrx_dispatch_request tail_request = {};
     if (!ggml_backend_hrx_make_moe_router_tail_request(
-            device_context, layer, &tail_request) ||
-        !ggml_backend_hrx_moe_router_tail_route_is_exact(
-            ggml_backend_hrx_find_request_route(
-                device_context, tail_request))) {
+            device_context, layer, &tail_request)) {
+        return false;
+    }
+    const auto * tail_route =
+        ggml_backend_hrx_find_request_route(
+            device_context, tail_request);
+    if (!ggml_backend_hrx_moe_router_tail_route_matches_request(
+            tail_route, tail_request)) {
         return false;
     }
 
-    *out_layer = layer;
+    *out_layer = std::move(layer);
     return true;
 }
 
@@ -9468,65 +9595,46 @@ static bool ggml_backend_hrx_build_moe_router_tail_graph_plan(
     candidate.add_skip_mask.assign(
         static_cast<size_t>(cgraph->n_nodes), 0);
 
-    std::array<const ggml_tensor *, 40> terminals = {};
     for (int i = 0; i < cgraph->n_nodes; ++i) {
-        int layer = -1;
-        if (!ggml_backend_hrx_parse_exact_layer_name(
-                cgraph->nodes[i], "ffn_moe_out-", &layer)) {
+        const ggml_tensor * terminal = cgraph->nodes[i];
+        if (!ggml_backend_hrx_moe_router_tail_candidate_domain(
+                terminal)) {
             continue;
         }
-        if (terminals[layer] != nullptr) {
+        ggml_backend_hrx_moe_router_tail_layer_plan layer = {};
+        if (!ggml_backend_hrx_match_moe_router_tail_layer(
+                device_context, cgraph, terminal, &layer)) {
+            continue;
+        }
+        const bool duplicate = std::any_of(
+            candidate.layers.begin(),
+            candidate.layers.end(),
+            [&layer](
+                    const ggml_backend_hrx_moe_router_tail_layer_plan & other) {
+                return other.down == layer.down ||
+                       other.mul == layer.mul ||
+                       other.dst == layer.dst;
+            });
+        if (duplicate) {
             return false;
         }
-        terminals[layer] = cgraph->nodes[i];
-    }
-    int q5_layers = 0;
-    int q6_layers = 0;
-    for (int layer = 0; layer < 40; ++layer) {
-        if (!terminals[layer] ||
-            !ggml_backend_hrx_match_moe_router_tail_layer(
-                device_context, cgraph, layer, terminals[layer],
-                &candidate.layers[layer])) {
-            return false;
-        }
-        if (layer == 0) {
-            candidate.ntokens = candidate.layers[layer].ntokens;
-        } else if (candidate.layers[layer].ntokens !=
-                   candidate.ntokens) {
-            return false;
-        }
-        const enum ggml_type weight_type =
-            candidate.layers[layer].down->src[0]->type;
-        q5_layers += weight_type == GGML_TYPE_Q5_K ? 1 : 0;
-        q6_layers += weight_type == GGML_TYPE_Q6_K ? 1 : 0;
-        const bool expected_q6 =
-            layer == 1 || layer == 34 ||
-            layer == 38 || layer == 39;
-        if (expected_q6 != (weight_type == GGML_TYPE_Q6_K)) {
-            return false;
-        }
-        // ADD0..ADD5 are replaced by terminal ADD6. The router MUL is proved
-        // dead by the same all-layer plan and skipped in the producer path.
-        for (int add = 0; add < 6; ++add) {
-            const int index =
-                candidate.layers[layer].add_indices[add];
+        for (size_t add = 0; add + 1 < layer.add_indices.size(); ++add) {
+            const int index = layer.add_indices[add];
             if (index < 0 ||
+                index >= cgraph->n_nodes ||
                 candidate.add_skip_mask[
                     static_cast<size_t>(index)] != 0) {
                 return false;
             }
+        }
+        for (size_t add = 0; add + 1 < layer.add_indices.size(); ++add) {
+            const int index = layer.add_indices[add];
             candidate.add_skip_mask[
                 static_cast<size_t>(index)] = 1;
         }
+        candidate.layers.push_back(std::move(layer));
     }
-    if (q5_layers != 36 || q6_layers != 4 ||
-        std::count(
-            candidate.add_skip_mask.begin(),
-            candidate.add_skip_mask.end(),
-            static_cast<uint8_t>(1)) != 240) {
-        return false;
-    }
-    candidate.ready = true;
+    candidate.ready = !candidate.layers.empty();
     *out_plan = std::move(candidate);
     return true;
 }
@@ -9549,20 +9657,16 @@ static bool ggml_backend_hrx_is_fused_producer_node(
         ggml_backend_hrx_device_context * device_context,
         const ggml_cgraph * cgraph,
         int node_index,
-        const ggml_backend_hrx_context * owner) {
+        ggml_backend_hrx_context * owner) {
     if (!device_context || !cgraph || node_index < 0 || node_index >= cgraph->n_nodes) {
         return false;
     }
     const ggml_tensor * producer = cgraph->nodes[node_index];
-    // PP512 SSM_CONV writes the sole SiLU consumer directly. Classify that
+    // Fused SSM_CONV writes the sole SiLU consumer directly. Classify that
     // consumer through the existing graph-UID-scoped fusion mask instead of
-    // adding a PP-only branch to the steady per-node dispatch loop. This
-    // function runs only while rebuilding that mask; decode cache hits never
-    // read the PP-only sidecar.
+    // adding a graph-plan branch to the steady per-node dispatch loop.
     const auto * ssm_conv_silu_plan =
-        device_context->current_gdn_qk_scale_plan
-            ? device_context->ssm_conv_silu_plan.get()
-            : nullptr;
+        device_context->ssm_conv_silu_plan.get();
     const auto * active_catalog =
         device_context->reg_context &&
                 device_context->reg_context->catalog
@@ -9580,13 +9684,15 @@ static bool ggml_backend_hrx_is_fused_producer_node(
             ssm_conv_silu_plan->skip_mask.size() &&
         ssm_conv_silu_plan
                 ->skip_mask[static_cast<size_t>(node_index)] != 0) {
-        ggml_backend_hrx_trace_event(device_context->reg_context, {
-            {"event", "fused_producer_skipped"},
-            {"producer_op", ggml_op_desc(producer)},
-            {"consumer_op", "SSM_CONV"},
-            {"route_id",
-             "ssm_conv_f32_chan_concat_silu_regblock_wg1024"},
-        });
+        if (ggml_backend_hrx_trace_enabled(
+                device_context->reg_context)) {
+            ggml_backend_hrx_trace_event(
+                device_context->reg_context, {
+                    {"event", "fused_producer_skipped"},
+                    {"producer_op", ggml_op_desc(producer)},
+                    {"consumer_op", "SSM_CONV"},
+                });
+        }
         return true;
     }
     const auto * shared_expert_plan =
@@ -9625,124 +9731,121 @@ static bool ggml_backend_hrx_is_fused_producer_node(
         return true;
     }
     const bool possible_fa =
-        producer && producer->op == GGML_OP_FLASH_ATTN_EXT &&
-        producer->ne[0] == 256 && producer->ne[1] == 16 &&
-        producer->ne[2] == 512 && producer->ne[3] == 1;
+        producer && producer->op == GGML_OP_FLASH_ATTN_EXT;
     const bool possible_fa_cont =
         producer && producer->op == GGML_OP_CONT &&
-        producer->ne[0] == 4096 && producer->ne[1] == 512 &&
-        producer->ne[2] == 1 && producer->ne[3] == 1;
+        producer->src[0] &&
+        producer->src[0]->op == GGML_OP_VIEW;
     const bool possible_fa_sigmoid =
         producer && producer->op == GGML_OP_UNARY &&
         ggml_get_unary_op(producer) == GGML_UNARY_OP_SIGMOID &&
-        producer->ne[0] == 4096 && producer->ne[1] == 512 &&
-        producer->ne[2] == 1 && producer->ne[3] == 1;
+        producer->src[0] &&
+        producer->src[0]->op == GGML_OP_CONT;
     if (possible_fa || possible_fa_cont || possible_fa_sigmoid) {
-        for (int i = node_index + 1; i < cgraph->n_nodes; ++i) {
-            const ggml_tensor * terminal = cgraph->nodes[i];
-            if (!terminal || terminal->op != GGML_OP_MUL) {
-                continue;
-            }
+        int terminal_index = node_index;
+        const int steps =
+            possible_fa ? 3 : possible_fa_cont ? 2 : 1;
+        for (int step = 0;
+             step < steps && terminal_index >= 0;
+             ++step) {
+            terminal_index =
+                ggml_backend_hrx_next_compute_node(
+                    cgraph, terminal_index);
+        }
+        const ggml_tensor * terminal =
+            terminal_index >= 0
+                ? cgraph->nodes[terminal_index]
+                : nullptr;
+        if (terminal && terminal->op == GGML_OP_MUL) {
             ggml_backend_hrx_dispatch_request fused = {};
             ggml_backend_hrx_fa_gate_epilogue_match match = {};
-            if (!ggml_backend_hrx_make_fa_gate_epilogue_request(
-                    device_context, terminal, &fused, &match) ||
-                (match.flash_attn != producer &&
-                 match.cont != producer &&
-                 match.sigmoid != producer)) {
-                continue;
+            if (ggml_backend_hrx_make_fa_gate_epilogue_request(
+                    device_context, terminal, &fused, &match) &&
+                (match.flash_attn == producer ||
+                 match.cont == producer ||
+                 match.sigmoid == producer)) {
+                if (ggml_backend_hrx_trace_enabled(
+                        device_context->reg_context)) {
+                    ggml_backend_hrx_trace_event(
+                        device_context->reg_context, {
+                            {"event", "fused_producer_skipped"},
+                            {"producer_op", ggml_op_desc(producer)},
+                            {"consumer_op", ggml_op_desc(terminal)},
+                        });
+                }
+                return true;
             }
-            ggml_backend_hrx_trace_event(device_context->reg_context, {
-                {"event", "fused_producer_skipped"},
-                {"producer_op", ggml_op_desc(producer)},
-                {"consumer_op", ggml_op_desc(terminal)},
-                {"route_id",
-                 "flash_attn_ext_f32_f16_wmma_gate_epilogue"},
-            });
-            return true;
         }
     }
-    // One-token GDN q8 GEMM -> SiLU -> in-place MUL. Skip exactly the Q8 and
-    // SiLU nodes only after the terminal-MUL request has re-proved the complete
-    // topology/alias contract and resolved the exact four-binding SCF route.
-    const bool possible_decode_gdn_q8 =
-        producer && producer->op == GGML_OP_MUL_MAT &&
-        producer->src[0] &&
-        producer->src[0]->type == GGML_TYPE_Q8_0 &&
-        producer->src[0]->ne[0] == 2048 &&
-        producer->src[0]->ne[1] == 4096 &&
-        producer->ne[0] == 4096 &&
-        producer->ne[1] == 1;
-    const bool possible_decode_gdn_silu =
-        producer && producer->op == GGML_OP_UNARY &&
-        ggml_get_unary_op(producer) == GGML_UNARY_OP_SILU &&
-        producer->ne[0] == 128 &&
-        producer->ne[1] == 32 &&
-        producer->ne[2] == 1 &&
-        producer->ne[3] == 1;
-    if (possible_decode_gdn_q8 || possible_decode_gdn_silu) {
-        for (int i = node_index + 1; i < cgraph->n_nodes; ++i) {
-            const ggml_tensor * terminal = cgraph->nodes[i];
-            if (!terminal || terminal->op != GGML_OP_MUL) {
-                continue;
+    // GDN q8 GEMM -> SiLU -> in-place MUL. The fused terminal is the next
+    // retained compute node after SiLU, so candidate discovery is local and
+    // independent of model dimensions; the catalog selects decode or batched
+    // specializations from the derived request.
+    const ggml_tensor * q8_gemm =
+        producer && producer->op == GGML_OP_MUL_MAT
+            ? producer
+            : producer && producer->op == GGML_OP_UNARY &&
+                      ggml_get_unary_op(producer) ==
+                          GGML_UNARY_OP_SILU &&
+                      producer->src[0]
+                ? ggml_backend_hrx_zero_offset_source_chain_target(
+                      producer->src[0], GGML_OP_MUL_MAT)
+                : nullptr;
+    const bool possible_gdn_q8_silu =
+        q8_gemm && q8_gemm->src[0] && q8_gemm->src[1] &&
+        q8_gemm->src[0]->type == GGML_TYPE_Q8_0 &&
+        (producer == q8_gemm ||
+         (producer->op == GGML_OP_UNARY &&
+          ggml_get_unary_op(producer) == GGML_UNARY_OP_SILU));
+    if (possible_gdn_q8_silu) {
+        int silu_index = node_index;
+        if (producer == q8_gemm) {
+            silu_index =
+                ggml_backend_hrx_next_compute_node(cgraph, node_index);
+            const ggml_tensor * silu =
+                silu_index >= 0
+                    ? cgraph->nodes[silu_index] : nullptr;
+            if (!silu || silu->op != GGML_OP_UNARY ||
+                ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU ||
+                !silu->src[0] ||
+                ggml_backend_hrx_zero_offset_source_chain_target(
+                    silu->src[0], GGML_OP_MUL_MAT) != q8_gemm) {
+                silu_index = -1;
             }
-            ggml_backend_hrx_dispatch_request fused = {};
-            ggml_backend_hrx_decode_gdn_q8_silu_mul_match match = {};
-            if (!ggml_backend_hrx_make_decode_gdn_q8_silu_mul_request(
-                    device_context, terminal, &fused, &match) ||
-                (match.q8_gemm != producer &&
-                 match.silu != producer)) {
-                continue;
-            }
-            ggml_backend_hrx_trace_event(
-                device_context->reg_context, {
-                    {"event", "fused_producer_skipped"},
-                    {"producer_op", ggml_op_desc(producer)},
-                    {"consumer_op", ggml_op_desc(terminal)},
-                    {"route_id",
-                     "mul_mat_q8_0_f32_packed_decode_k2048_"
-                     "r4096_c1_wg256_scfunroll2_"
-                     "gdn_silu_mul_epilogue"},
-                });
-            return true;
         }
-    }
-    // GDN q8 GEMM -> SiLU -> in-place MUL: the terminal fused route computes
-    // both materialized producers directly. Re-run the complete topology,
-    // alias, consumer and route gate before skipping either one.
-    const bool possible_gdn_q8 =
-        producer && producer->op == GGML_OP_MUL_MAT &&
-        producer->src[0] && producer->src[0]->type == GGML_TYPE_Q8_0 &&
-        producer->src[0]->ne[0] == 2048 &&
-        producer->src[0]->ne[1] == 4096 &&
-        producer->ne[0] == 4096 &&
-        producer->ne[1] == 512;
-    const bool possible_gdn_silu =
-        producer && producer->op == GGML_OP_UNARY &&
-        ggml_get_unary_op(producer) == GGML_UNARY_OP_SILU &&
-        producer->ne[0] == 128 &&
-        ggml_backend_hrx_tensor_row_count(producer) == 16384;
-    if (possible_gdn_q8 || possible_gdn_silu) {
-        for (int i = node_index + 1; i < cgraph->n_nodes; ++i) {
-            const ggml_tensor * terminal = cgraph->nodes[i];
-            if (!terminal || terminal->op != GGML_OP_MUL) {
-                continue;
-            }
+        const int terminal_index =
+            silu_index >= 0
+                ? ggml_backend_hrx_next_compute_node(cgraph, silu_index)
+                : -1;
+        const ggml_tensor * terminal =
+            terminal_index >= 0
+                ? cgraph->nodes[terminal_index]
+                : nullptr;
+        if (terminal && terminal->op == GGML_OP_MUL) {
             ggml_backend_hrx_dispatch_request fused = {};
             ggml_backend_hrx_gdn_q8_silu_mul_match match = {};
-            if (!ggml_backend_hrx_make_gdn_q8_silu_mul_request(
-                    device_context, terminal, &fused, &match) ||
-                (match.q8_gemm != producer && match.silu != producer)) {
-                continue;
+            const bool decode = q8_gemm->src[1]->ne[1] == 1;
+            const bool matched =
+                ggml_backend_hrx_make_gdn_q8_silu_mul_request(
+                    device_context, terminal,
+                    decode
+                        ? "MUL_MAT_GDN_SILU_MUL_EPILOGUE_DECODE"
+                        : "MUL_MAT_GDN_SILU_MUL_EPILOGUE",
+                    &fused, &match);
+            if (matched &&
+                (match.q8_gemm == producer ||
+                 match.silu == producer)) {
+                if (ggml_backend_hrx_trace_enabled(
+                        device_context->reg_context)) {
+                    ggml_backend_hrx_trace_event(
+                        device_context->reg_context, {
+                            {"event", "fused_producer_skipped"},
+                            {"producer_op", ggml_op_desc(producer)},
+                            {"consumer_op", ggml_op_desc(terminal)},
+                        });
+                }
+                return true;
             }
-            ggml_backend_hrx_trace_event(device_context->reg_context, {
-                {"event", "fused_producer_skipped"},
-                {"producer_op", ggml_op_desc(producer)},
-                {"consumer_op", ggml_op_desc(terminal)},
-                {"route_id",
-                 "mul_mat_q8_0_f32_wmmai8_gdn_silu_mul_epilogue"},
-            });
-            return true;
         }
     }
     // Terminal up-MMID + SwiGLU: the GLU dispatch recomputes the later up
@@ -9763,31 +9866,20 @@ static bool ggml_backend_hrx_is_fused_producer_node(
                 match.up != producer) {
                 continue;
             }
-            const auto * terminal_qact_layer =
-                ggml_backend_hrx_find_terminal_qact_layer(
-                    device_context->current_terminal_qact_plan,
-                    terminal);
-            const char * route_id = terminal_qact_layer
-                ? "mul_mat_id_q4_k_f32_mmq_gfx1151_wg256_"
-                  "pre_tbl_swiglu_q5_down_qact"
-                : (producer->src[0] &&
-                           producer->src[0]->type == GGML_TYPE_Q5_K
-                       ? "mul_mat_id_q5_k_f32_mmq_gfx1151_"
-                         "wg256_pre_tbl_swiglu"
-                       : "mul_mat_id_q4_k_f32_mmq_gfx1151_"
-                         "wg256_pre_tbl_swiglu");
-            ggml_backend_hrx_trace_event(device_context->reg_context, {
-                {"event", "fused_producer_skipped"},
-                {"producer_op", ggml_op_desc(producer)},
-                {"consumer_op", ggml_op_desc(terminal)},
-                {"route_id", route_id},
-            });
+            if (ggml_backend_hrx_trace_enabled(
+                    device_context->reg_context)) {
+                ggml_backend_hrx_trace_event(
+                    device_context->reg_context, {
+                        {"event", "fused_producer_skipped"},
+                        {"producer_op", ggml_op_desc(producer)},
+                        {"consumer_op", ggml_op_desc(terminal)},
+                    });
+            }
             return true;
         }
     }
-    // PP512 runs as an alias-safe ARGSORT stage plus DIV copy, so those two stay
-    // live. Decode runs the entire tail at DIV after one wave has loaded all
-    // logits, so ARGSORT is absorbed there as well.
+    // Batched routing runs as an alias-safe ARGSORT stage plus DIV copy, so
+    // those two stay live. Decode absorbs ARGSORT at DIV after loading logits.
     if (producer &&
         (producer->op == GGML_OP_SOFT_MAX ||
          producer->op == GGML_OP_ARGSORT ||
@@ -9814,14 +9906,15 @@ static bool ggml_backend_hrx_is_fused_producer_node(
             if (!available) {
                 continue;
             }
-            ggml_backend_hrx_trace_event(device_context->reg_context, {
-                {"event", "fused_producer_skipped"},
-                {"producer_op", ggml_op_desc(producer)},
-                {"consumer_op", ggml_op_desc(terminal)},
-                {"route_id", match.logits->ne[1] == 1
-                    ? "topk_moe_softmax_norm_decode_f32"
-                    : "topk_moe_softmax_norm_stage_f32+topk_moe_weights_copy_f32"},
-            });
+            if (ggml_backend_hrx_trace_enabled(
+                    device_context->reg_context)) {
+                ggml_backend_hrx_trace_event(
+                    device_context->reg_context, {
+                        {"event", "fused_producer_skipped"},
+                        {"producer_op", ggml_op_desc(producer)},
+                        {"consumer_op", ggml_op_desc(terminal)},
+                    });
+            }
             return true;
         }
     }
@@ -9905,14 +9998,84 @@ static bool ggml_backend_hrx_is_fused_producer_node(
         if (!producer_consumed || !expected_family) {
             continue;
         }
-        ggml_backend_hrx_dispatch_request request = {};
-        if (!ggml_backend_hrx_make_dispatch_request(device_context, consumer, &request) ||
-            !device_context->reg_context || !device_context->reg_context->catalog) {
+        ggml_backend_hrx_direct_fusion_match graph_match = {};
+        if (!ggml_backend_hrx_match_direct_fusion_graph(
+                cgraph, consumer, &graph_match, i) ||
+            !graph_match.family ||
+            std::strcmp(graph_match.family, expected_family) != 0 ||
+            std::find(
+                graph_match.producers.begin(),
+                graph_match.producers.begin() +
+                    static_cast<ptrdiff_t>(
+                        graph_match.producer_count),
+                producer) ==
+                graph_match.producers.begin() +
+                    static_cast<ptrdiff_t>(
+                        graph_match.producer_count)) {
             continue;
         }
-        ggml_backend_hrx_add_tensor_overlap_facts(&request.problem, request.tensors);
-        const auto * route = ggml_backend_hrx_catalog_find_route(*device_context->reg_context->catalog, request.problem);
-        if (route && route->family == expected_family) {
+        ggml_backend_hrx_dispatch_request request = {};
+        bool request_built = false;
+        if (graph_match.kind ==
+            ggml_backend_hrx_direct_fusion_kind::rms_norm_mul) {
+            request_built =
+                ggml_backend_hrx_make_rms_norm_mul_request(
+                    device_context, consumer, &request, &graph_match);
+        } else if (graph_match.kind ==
+                   ggml_backend_hrx_direct_fusion_kind::
+                       add_rms_norm_mul) {
+            request_built =
+                ggml_backend_hrx_make_add_rms_norm_mul_request(
+                    device_context, consumer, &request, &graph_match);
+        } else {
+            const int saved_node_index =
+                device_context->current_node_index;
+            device_context->current_node_index = i;
+            request_built =
+                ggml_backend_hrx_make_dispatch_request(
+                    device_context, consumer, &request);
+            device_context->current_node_index =
+                saved_node_index;
+        }
+        if (!request_built || !device_context->reg_context ||
+            !device_context->reg_context->catalog) {
+            continue;
+        }
+        const auto * route =
+            ggml_backend_hrx_find_request_route(device_context, request);
+        if (route && route->family == expected_family &&
+            ggml_backend_hrx_route_matches_request(route, request)) {
+            if (owner &&
+                owner->fusion_producer_mask.size() ==
+                    static_cast<size_t>(cgraph->n_nodes)) {
+                for (size_t p = 0;
+                     p < graph_match.producer_count; ++p) {
+                    const int producer_index =
+                        ggml_backend_hrx_graph_node_index(
+                            cgraph, graph_match.producers[p]);
+                    if (producer_index >= 0) {
+                        owner->fusion_producer_mask[
+                            static_cast<size_t>(producer_index)] = 1;
+                    }
+                }
+            }
+            auto terminal_memo =
+                device_context->resolved_dispatches.find(consumer);
+            if (cgraph->uid != 0 &&
+                terminal_memo !=
+                    device_context->resolved_dispatches.end() &&
+                terminal_memo->second.route == route &&
+                terminal_memo->second.prepass_free &&
+                ggml_backend_hrx_resolved_specialization_matches(
+                    *route, request.problem,
+                    terminal_memo->second)) {
+                terminal_memo->second.signature =
+                    ggml_backend_hrx_node_signature(consumer);
+                terminal_memo->second.graph_uid = cgraph->uid;
+                terminal_memo->second.tensors = request.tensors;
+                terminal_memo->second.constants =
+                    request.constants;
+            }
             ggml_backend_hrx_trace_event(device_context->reg_context, {
                 {"event", "fused_producer_skipped"},
                 {"producer_op", ggml_op_desc(producer)},
@@ -9923,26 +10086,6 @@ static bool ggml_backend_hrx_is_fused_producer_node(
         }
     }
     return false;
-}
-
-static constexpr std::array<int, 30>
-    ggml_backend_hrx_recurrent_cache_layers = {
-        0, 1, 2, 4, 5, 6, 8, 9, 10, 12,
-        13, 14, 16, 17, 18, 20, 21, 22, 24, 25,
-        26, 28, 29, 30, 32, 33, 34, 36, 37, 38,
-    };
-
-static bool ggml_backend_hrx_shape_is(
-        const ggml_tensor * tensor,
-        int64_t ne0,
-        int64_t ne1,
-        int64_t ne2,
-        int64_t ne3) {
-    return tensor &&
-           tensor->ne[0] == ne0 &&
-           tensor->ne[1] == ne1 &&
-           tensor->ne[2] == ne2 &&
-           tensor->ne[3] == ne3;
 }
 
 static bool ggml_backend_hrx_storage_subspan(
@@ -9987,54 +10130,6 @@ static bool ggml_backend_hrx_storage_spans_overlap(
            rhs_offset < lhs_offset + lhs_length;
 }
 
-static bool ggml_backend_hrx_storage_spans_adjacent(
-        const ggml_tensor * lhs,
-        const ggml_tensor * rhs) {
-    ggml_backend_buffer_t lhs_buffer = nullptr;
-    ggml_backend_buffer_t rhs_buffer = nullptr;
-    size_t lhs_offset = 0;
-    size_t rhs_offset = 0;
-    size_t lhs_length = 0;
-    size_t rhs_length = 0;
-    return ggml_backend_hrx_tensor_storage_range(
-               lhs, &lhs_buffer, &lhs_offset, &lhs_length) &&
-           ggml_backend_hrx_tensor_storage_range(
-               rhs, &rhs_buffer, &rhs_offset, &rhs_length) &&
-           lhs_buffer == rhs_buffer &&
-           lhs_offset + lhs_length == rhs_offset;
-}
-
-static bool ggml_backend_hrx_all_storage_spans_disjoint(
-        const std::vector<const ggml_tensor *> & tensors) {
-    for (size_t i = 0; i < tensors.size(); ++i) {
-        for (size_t j = i + 1; j < tensors.size(); ++j) {
-            if (!ggml_backend_hrx_disjoint_storage_spans(
-                    tensors[i], tensors[j])) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-static int ggml_backend_hrx_exact_cache_layer(
-        const ggml_tensor * tensor,
-        char cache_kind) {
-    if (!tensor || (cache_kind != 'r' && cache_kind != 's')) {
-        return -1;
-    }
-    for (int layer : ggml_backend_hrx_recurrent_cache_layers) {
-        char expected[64];
-        std::snprintf(
-            expected, sizeof(expected),
-            "cache_%c_l%d (reshaped)", cache_kind, layer);
-        if (std::strcmp(ggml_get_name(tensor), expected) == 0) {
-            return layer;
-        }
-    }
-    return -1;
-}
-
 static std::vector<const ggml_tensor *>
 ggml_backend_hrx_compute_consumers(
         const ggml_cgraph * cgraph,
@@ -10063,20 +10158,19 @@ ggml_backend_hrx_compute_consumers(
 static bool ggml_backend_hrx_match_terminal_qact_layer(
         ggml_backend_hrx_device_context * device_context,
         const ggml_cgraph * cgraph,
-        int layer_number,
-        const ggml_tensor * glu,
+        const ggml_tensor * down,
         ggml_backend_hrx_terminal_qact_layer_plan * out_layer) {
-    if (!device_context || !cgraph || !glu || !out_layer ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            glu, "ffn_moe_swiglu-", layer_number)) {
+    if (!device_context || !cgraph || !down || !out_layer ||
+        down->op != GGML_OP_MUL_MAT_ID || !down->src[1]) {
         return false;
     }
+    const ggml_tensor * glu = down->src[1];
 
     ggml_backend_hrx_dispatch_request producer_request = {};
     ggml_backend_hrx_mul_mat_id_swiglu_match match = {};
     if (!ggml_backend_hrx_make_terminal_qact_producer_request(
             device_context, glu, &producer_request, &match) ||
-        !match.up || !match.down ||
+        !match.up || match.down != down ||
         match.up->src[0]->type != GGML_TYPE_Q4_K ||
         match.down->op != GGML_OP_MUL_MAT_ID ||
         !match.down->src[0] || !match.down->src[1] ||
@@ -10085,22 +10179,35 @@ static bool ggml_backend_hrx_match_terminal_qact_layer(
         match.down->src[1] != glu ||
         match.down->src[2] != match.up->src[2] ||
         !ggml_backend_hrx_is_q5_down_group4_tensor(
-            match.down->src[0]) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            match.down, "ffn_moe_down-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            match.down->src[2], "ffn_moe_topk-", layer_number) ||
-        match.down->src[0]->ne[0] != 512 ||
-        match.down->src[0]->ne[1] != 2048 ||
-        match.down->src[0]->ne[2] != 256 ||
-        match.down->src[0]->ne[3] != 1 ||
-        match.down->ne[0] != 2048 ||
-        match.down->ne[1] != 8 ||
-        match.down->ne[2] != 512 ||
+            match.down->src[0])) {
+        return false;
+    }
+
+    const ggml_tensor * weight = match.down->src[0];
+    const ggml_tensor * ids = match.down->src[2];
+    const int64_t k = weight->ne[0];
+    const int64_t rows = weight->ne[1];
+    const int64_t nexperts = weight->ne[2];
+    const int64_t nselected = ids->ne[0];
+    const int64_t ntokens = ids->ne[1];
+    if (k <= 0 || rows <= 0 || nexperts <= 0 ||
+        nselected <= 0 || nselected > nexperts || ntokens <= 0 ||
+        weight->ne[3] != 1 ||
+        match.up->src[0]->ne[1] != k ||
+        match.up->src[0]->ne[2] != nexperts ||
+        glu->ne[0] != k ||
+        glu->ne[1] != nselected ||
+        glu->ne[2] != ntokens ||
+        glu->ne[3] != 1 ||
+        ids->ne[2] != 1 || ids->ne[3] != 1 ||
+        match.down->ne[0] != rows ||
+        match.down->ne[1] != nselected ||
+        match.down->ne[2] != ntokens ||
         match.down->ne[3] != 1 ||
         match.down->nb[0] != sizeof(float) ||
-        match.down->nb[2] != 16384 * sizeof(float) ||
-        ggml_nbytes(match.down) != 32 * 1024 * 1024) {
+        match.down->nb[2] !=
+            ggml_row_size(match.down->type, rows) *
+                static_cast<size_t>(nselected)) {
         return false;
     }
 
@@ -10129,12 +10236,8 @@ static bool ggml_backend_hrx_match_terminal_qact_layer(
     }
 
     *out_layer = {
-        /* .layer = */ layer_number,
-        /* .glu_index = */ glu_index,
-        /* .down_index = */ down_index,
         /* .glu = */ glu,
         /* .down = */ match.down,
-        /* .ids = */ match.down->src[2],
     };
     return true;
 }
@@ -10144,7 +10247,6 @@ static bool ggml_backend_hrx_build_terminal_qact_graph_plan(
         const ggml_cgraph * cgraph,
         ggml_backend_hrx_terminal_qact_graph_plan * out_plan) {
     if (!device_context || !cgraph || !out_plan ||
-        cgraph->uid == 0 ||
         !device_context->reg_context ||
         !device_context->reg_context->catalog) {
         return false;
@@ -10156,58 +10258,23 @@ static bool ggml_backend_hrx_build_terminal_qact_graph_plan(
     candidate.catalog =
         device_context->reg_context->catalog.get();
     candidate.examined = true;
-    std::array<bool, 40> seen = {};
-    size_t q5_layers = 0;
-    size_t q6_layers = 0;
 
     for (int i = 0; i < cgraph->n_nodes; ++i) {
-        const ggml_tensor * glu = cgraph->nodes[i];
-        int layer = -1;
-        if (!ggml_backend_hrx_parse_exact_layer_name(
-                glu, "ffn_moe_swiglu-", &layer)) {
+        const ggml_tensor * down = cgraph->nodes[i];
+        if (!ggml_backend_hrx_terminal_qact_candidate_domain(
+                down)) {
             continue;
         }
-        if (seen[static_cast<size_t>(layer)]) {
-            return false;
-        }
-        seen[static_cast<size_t>(layer)] = true;
 
-        ggml_backend_hrx_mul_mat_id_swiglu_match generic = {};
-        if (!ggml_backend_hrx_match_current_mul_mat_id_swiglu(
-                device_context, glu, &generic) ||
-            !generic.down || !generic.down->src[0]) {
-            return false;
+        ggml_backend_hrx_terminal_qact_layer_plan layer = {};
+        if (!ggml_backend_hrx_match_terminal_qact_layer(
+                device_context, cgraph, down, &layer)) {
+            continue;
         }
-        if (generic.down->src[0]->type == GGML_TYPE_Q5_K) {
-            ggml_backend_hrx_terminal_qact_layer_plan layer_plan = {};
-            if (!ggml_backend_hrx_match_terminal_qact_layer(
-                    device_context, cgraph, layer, glu,
-                    &layer_plan)) {
-                return false;
-            }
-            candidate.layers[static_cast<size_t>(layer)] =
-                layer_plan;
-            ++q5_layers;
-        } else if (
-            generic.down->src[0]->type == GGML_TYPE_Q6_K &&
-            generic.down->src[0]->ne[0] == 512 &&
-            generic.down->src[0]->ne[1] == 2048 &&
-            generic.down->src[0]->ne[2] == 256 &&
-            generic.down->src[0]->ne[3] == 1 &&
-            ggml_backend_hrx_has_exact_layer_name(
-                generic.down, "ffn_moe_down-", layer)) {
-            ++q6_layers;
-        } else {
-            return false;
-        }
+        candidate.layers.push_back(layer);
     }
 
-    if (q5_layers != 36 || q6_layers != 4 ||
-        std::count(seen.begin(), seen.end(), true) != 40) {
-        return false;
-    }
-    candidate.layer_count = q5_layers;
-    candidate.ready = true;
+    candidate.ready = !candidate.layers.empty();
     *out_plan = std::move(candidate);
     return true;
 }
@@ -10215,19 +10282,15 @@ static bool ggml_backend_hrx_build_terminal_qact_graph_plan(
 static bool ggml_backend_hrx_match_shared_expert_terminal_layer(
         ggml_backend_hrx_device_context * device_context,
         const ggml_cgraph * cgraph,
-        int layer_number,
         const ggml_tensor * terminal,
         ggml_backend_hrx_shared_expert_terminal_layer_plan * out_layer) {
     if (!device_context || !cgraph || !terminal || !out_layer ||
         terminal->op != GGML_OP_ADD ||
-        !terminal->src[0] || !terminal->src[1] ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            terminal, "ffn_out-", layer_number)) {
+        !terminal->src[0] || !terminal->src[1]) {
         return false;
     }
 
     ggml_backend_hrx_shared_expert_terminal_layer_plan layer = {};
-    layer.layer = layer_number;
     layer.terminal = terminal;
     layer.addend = terminal->src[0];
     layer.mul = terminal->src[1];
@@ -10252,91 +10315,52 @@ static bool ggml_backend_hrx_match_shared_expert_terminal_layer(
         return false;
     }
 
-    char down_weight_name[64];
-    char raw_weight_name[64];
-    std::snprintf(
-        down_weight_name, sizeof(down_weight_name),
-        "blk.%d.ffn_down_shexp.weight", layer_number);
-    std::snprintf(
-        raw_weight_name, sizeof(raw_weight_name),
-        "blk.%d.ffn_gate_inp_shexp.weight", layer_number);
-    if (!ggml_backend_hrx_has_exact_layer_name(
-            layer.down, "ffn_shexp-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.down->src[1], "ffn_swiglu-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.raw_gate, "shared_expert_gate-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.raw_gate->src[1], "attn_post_norm-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.sigmoid, "shared_expert_gate_sigmoid-",
-            layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.mul, "ffn_shexp_gated-", layer_number) ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.addend, "ffn_moe_out-", layer_number) ||
-        std::strcmp(
-            ggml_get_name(layer.down->src[0]), down_weight_name) != 0 ||
-        std::strcmp(
-            ggml_get_name(layer.raw_gate->src[0]), raw_weight_name) != 0) {
-        return false;
-    }
-
-    constexpr size_t matrix_bytes =
-        2048ull * 512ull * sizeof(float);
-    constexpr size_t activation_bytes =
-        512ull * 512ull * sizeof(float);
-    constexpr size_t gate_bytes = 512ull * sizeof(float);
+    const ggml_tensor * down_weight = layer.down->src[0];
+    const ggml_tensor * activation = layer.down->src[1];
+    const ggml_tensor * gate_weight = layer.raw_gate->src[0];
+    const ggml_tensor * gate_input = layer.raw_gate->src[1];
+    const int64_t k = down_weight->ne[0];
+    const int64_t rows = down_weight->ne[1];
+    const int64_t tokens = activation->ne[1];
     if (layer.down->src[0]->type != GGML_TYPE_Q8_0 ||
-        layer.down->src[1]->type != GGML_TYPE_F32 ||
+        activation->type != GGML_TYPE_F32 ||
         layer.down->type != GGML_TYPE_F32 ||
-        layer.raw_gate->src[0]->type != GGML_TYPE_F32 ||
-        layer.raw_gate->src[1]->type != GGML_TYPE_F32 ||
+        gate_weight->type != GGML_TYPE_F32 ||
+        gate_input->type != GGML_TYPE_F32 ||
         layer.raw_gate->type != GGML_TYPE_F32 ||
         layer.sigmoid->type != GGML_TYPE_F32 ||
         layer.mul->type != GGML_TYPE_F32 ||
         layer.addend->type != GGML_TYPE_F32 ||
         layer.terminal->type != GGML_TYPE_F32 ||
-        !ggml_backend_hrx_shape_is(
-            layer.down->src[0], 512, 2048, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.down->src[1], 512, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.down, 2048, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.raw_gate->src[0], 2048, 1, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.raw_gate->src[1], 2048, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.raw_gate, 1, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.sigmoid, 1, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.mul, 2048, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.addend, 2048, 512, 1, 1) ||
-        !ggml_backend_hrx_shape_is(
-            layer.terminal, 2048, 512, 1, 1) ||
-        layer.down->src[0]->nb[1] != 544 ||
-        layer.down->src[1]->nb[1] != 512 * sizeof(float) ||
-        layer.down->nb[1] != 2048 * sizeof(float) ||
-        layer.raw_gate->src[0]->nb[1] !=
-            2048 * sizeof(float) ||
-        layer.raw_gate->src[1]->nb[1] !=
-            2048 * sizeof(float) ||
+        k <= 0 || rows <= 0 || tokens <= 0 ||
+        down_weight->ne[2] != 1 || down_weight->ne[3] != 1 ||
+        activation->ne[0] != k ||
+        activation->ne[2] != 1 || activation->ne[3] != 1 ||
+        layer.down->ne[0] != rows ||
+        layer.down->ne[1] != tokens ||
+        layer.down->ne[2] != 1 || layer.down->ne[3] != 1 ||
+        gate_weight->ne[0] != rows || gate_weight->ne[1] != 1 ||
+        gate_weight->ne[2] != 1 || gate_weight->ne[3] != 1 ||
+        gate_input->ne[0] != rows || gate_input->ne[1] != tokens ||
+        gate_input->ne[2] != 1 || gate_input->ne[3] != 1 ||
+        layer.raw_gate->ne[0] != 1 ||
+        layer.raw_gate->ne[1] != tokens ||
+        layer.raw_gate->ne[2] != 1 || layer.raw_gate->ne[3] != 1 ||
+        !ggml_are_same_shape(layer.raw_gate, layer.sigmoid) ||
+        !ggml_are_same_shape(layer.down, layer.mul) ||
+        !ggml_are_same_shape(layer.down, layer.addend) ||
+        !ggml_are_same_shape(layer.down, layer.terminal) ||
+        down_weight->nb[1] != ggml_row_size(down_weight->type, k) ||
+        activation->nb[1] != static_cast<size_t>(k) * sizeof(float) ||
+        layer.down->nb[1] != static_cast<size_t>(rows) * sizeof(float) ||
+        gate_weight->nb[1] != static_cast<size_t>(rows) * sizeof(float) ||
+        gate_input->nb[1] != static_cast<size_t>(rows) * sizeof(float) ||
         layer.raw_gate->nb[1] != sizeof(float) ||
-        ggml_nbytes(layer.down) != matrix_bytes ||
-        ggml_nbytes(layer.down->src[1]) != activation_bytes ||
-        ggml_nbytes(layer.raw_gate) != gate_bytes ||
-        ggml_nbytes(layer.sigmoid) != gate_bytes ||
-        ggml_nbytes(layer.mul) != matrix_bytes ||
-        ggml_nbytes(layer.addend) != matrix_bytes ||
-        ggml_nbytes(layer.terminal) != matrix_bytes ||
-        !ggml_is_contiguous(layer.down->src[0]) ||
-        !ggml_backend_hrx_is_f32_dense(layer.down->src[1]) ||
+        !ggml_is_contiguous(down_weight) ||
+        !ggml_backend_hrx_is_f32_dense(activation) ||
         !ggml_backend_hrx_is_f32_dense(layer.down) ||
-        !ggml_backend_hrx_is_f32_dense(layer.raw_gate->src[0]) ||
-        !ggml_backend_hrx_is_f32_dense(layer.raw_gate->src[1]) ||
+        !ggml_backend_hrx_is_f32_dense(gate_weight) ||
+        !ggml_backend_hrx_is_f32_dense(gate_input) ||
         !ggml_backend_hrx_is_f32_dense(layer.raw_gate) ||
         !ggml_backend_hrx_is_f32_dense(layer.sigmoid) ||
         !ggml_backend_hrx_is_f32_dense(layer.mul) ||
@@ -10348,36 +10372,31 @@ static bool ggml_backend_hrx_match_shared_expert_terminal_layer(
         !ggml_backend_hrx_same_storage_span(
             layer.addend, layer.terminal) ||
         !ggml_backend_hrx_all_storage_spans_disjoint({
-            layer.down->src[0],
-            layer.down->src[1],
-            layer.raw_gate,
-            layer.addend,
-        }) ||
-        !ggml_backend_hrx_all_storage_spans_disjoint({
             layer.down,
             layer.down->src[0],
             layer.down->src[1],
             layer.raw_gate,
             layer.addend,
-        }) ||
-        (layer.down->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (layer.sigmoid->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (layer.mul->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+        })) {
         return false;
     }
 
-    const auto sole_consumer_is = [cgraph](
-            const ggml_tensor * producer,
-            const ggml_tensor * expected) {
-        const auto consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, producer);
-        return consumers.size() == 1 && consumers[0] == expected;
-    };
-    if (!sole_consumer_is(layer.down, layer.mul) ||
-        !sole_consumer_is(layer.raw_gate, layer.sigmoid) ||
-        !sole_consumer_is(layer.sigmoid, layer.mul) ||
-        !sole_consumer_is(layer.mul, layer.terminal) ||
-        !sole_consumer_is(layer.addend, layer.terminal)) {
+    ggml_backend_hrx_dispatch_request request = {};
+    if (!ggml_backend_hrx_make_shared_expert_terminal_request(
+            device_context, layer, &request)) {
+        return false;
+    }
+
+    if (!ggml_backend_hrx_graph_value_is_private_to_consumer(
+            cgraph, layer.down, layer.mul) ||
+        !ggml_backend_hrx_graph_has_single_compute_consumer(
+            cgraph, layer.raw_gate, layer.sigmoid) ||
+        !ggml_backend_hrx_graph_value_is_private_to_consumer(
+            cgraph, layer.sigmoid, layer.mul) ||
+        !ggml_backend_hrx_graph_value_is_private_to_consumer(
+            cgraph, layer.mul, layer.terminal) ||
+        !ggml_backend_hrx_graph_has_single_compute_consumer(
+            cgraph, layer.addend, layer.terminal)) {
         return false;
     }
 
@@ -10410,11 +10429,6 @@ static bool ggml_backend_hrx_match_shared_expert_terminal_layer(
         return false;
     }
 
-    ggml_backend_hrx_dispatch_request request = {};
-    if (!ggml_backend_hrx_make_shared_expert_terminal_request(
-            device_context, layer, &request)) {
-        return false;
-    }
     *out_layer = layer;
     return true;
 }
@@ -10433,32 +10447,24 @@ static bool ggml_backend_hrx_build_shared_expert_terminal_graph_plan(
     candidate.node_count = cgraph->n_nodes;
     candidate.catalog = device_context->reg_context->catalog.get();
     candidate.examined = true;
+    candidate.layers.reserve(64);
     candidate.skip_mask.assign(
         static_cast<size_t>(cgraph->n_nodes), 0);
 
-    std::array<const ggml_tensor *, 40> terminals = {};
     for (int i = 0; i < cgraph->n_nodes; ++i) {
-        int layer = -1;
-        if (!ggml_backend_hrx_parse_exact_layer_name(
-                cgraph->nodes[i], "ffn_out-", &layer)) {
+        const ggml_tensor * terminal = cgraph->nodes[i];
+        if (!terminal || terminal->op != GGML_OP_ADD) {
             continue;
         }
-        if (terminals[layer] != nullptr) {
-            return false;
-        }
-        terminals[layer] = cgraph->nodes[i];
-    }
-    for (int layer = 0; layer < 40; ++layer) {
-        if (!terminals[layer] ||
-            !ggml_backend_hrx_match_shared_expert_terminal_layer(
-                device_context, cgraph, layer, terminals[layer],
-                &candidate.layers[layer])) {
-            return false;
+        ggml_backend_hrx_shared_expert_terminal_layer_plan layer = {};
+        if (!ggml_backend_hrx_match_shared_expert_terminal_layer(
+                device_context, cgraph, terminal, &layer)) {
+            continue;
         }
         const std::array<int, 3> skipped = {
-            candidate.layers[layer].down_index,
-            candidate.layers[layer].sigmoid_index,
-            candidate.layers[layer].mul_index,
+            layer.down_index,
+            layer.sigmoid_index,
+            layer.mul_index,
         };
         for (const int index : skipped) {
             if (index < 0 ||
@@ -10467,10 +10473,9 @@ static bool ggml_backend_hrx_build_shared_expert_terminal_graph_plan(
             }
             candidate.skip_mask[static_cast<size_t>(index)] = 1;
         }
+        candidate.layers.push_back(layer);
     }
-    if (std::count(
-            candidate.skip_mask.begin(),
-            candidate.skip_mask.end(), uint8_t{1}) != 120) {
+    if (candidate.layers.empty()) {
         return false;
     }
     candidate.ready = true;
@@ -10507,65 +10512,51 @@ static bool ggml_backend_hrx_match_gdn_rms_side_layer(
     layer.q8_gemm = q8_match.q8_gemm;
     layer.silu = q8_match.silu;
     layer.terminal = terminal;
-    if (!ggml_backend_hrx_parse_exact_layer_name(
-            layer.raw, "attn_output-", &layer.layer)) {
+    const auto * qk_plan =
+        device_context->current_gdn_qk_scale_plan;
+    if (!qk_plan || !qk_plan->ready) {
         return false;
     }
-    const auto * qk_scale_layer =
-        ggml_backend_hrx_find_gdn_qk_scale_layer(
-            device_context, layer.layer);
-    if (!qk_scale_layer || !qk_scale_layer->gated_delta_net ||
-        !ggml_backend_hrx_metadata_chain_reaches(
-            layer.raw, qk_scale_layer->gated_delta_net)) {
+    const ggml_backend_hrx_gdn_qk_scale_layer * qk_scale_layer =
+        nullptr;
+    for (const auto & candidate : qk_plan->layers) {
+        if (!candidate.gated_delta_net ||
+            !ggml_backend_hrx_metadata_chain_reaches(
+                layer.raw, candidate.gated_delta_net)) {
+            continue;
+        }
+        if (qk_scale_layer) {
+            return false;
+        }
+        qk_scale_layer = &candidate;
+    }
+    if (!qk_scale_layer) {
         return false;
     }
+    layer.gated_delta_net = qk_scale_layer->gated_delta_net;
     layer.gated_delta_net_index =
         qk_scale_layer->gated_delta_net_index;
-
-    char norm_weight_name[64];
-    char gate_weight_name[64];
-    std::snprintf(
-        norm_weight_name, sizeof(norm_weight_name),
-        "blk.%d.ssm_norm.weight", layer.layer);
-    std::snprintf(
-        gate_weight_name, sizeof(gate_weight_name),
-        "blk.%d.attn_gate.weight", layer.layer);
-    if (std::strcmp(
-            ggml_get_name(layer.norm_weight),
-            norm_weight_name) != 0 ||
-        std::strcmp(
-            ggml_get_name(layer.q8_gemm->src[0]),
-            gate_weight_name) != 0 ||
-        !ggml_backend_hrx_has_exact_layer_name(
-            layer.q8_gemm->src[1], "attn_norm-", layer.layer)) {
-        return false;
-    }
 
     uint32_t eps_bits = 0;
     std::memcpy(
         &eps_bits, layer.rms_norm->op_params, sizeof(eps_bits));
-    constexpr size_t side_bytes =
-        128ull * 16384ull * sizeof(float);
-    constexpr size_t weight_bytes = 128ull * sizeof(float);
+    const int64_t ncols = layer.raw->ne[0];
+    const int64_t nrows =
+        ggml_backend_hrx_tensor_row_count(layer.raw);
     if (eps_bits != 0x358637bdu ||
+        ncols <= 0 || nrows <= 0 ||
         layer.raw->op != GGML_OP_VIEW ||
         layer.raw->type != GGML_TYPE_F32 ||
         layer.rms_norm->type != GGML_TYPE_F32 ||
         layer.norm_weight->type != GGML_TYPE_F32 ||
         layer.side->type != GGML_TYPE_F32 ||
-        layer.raw->ne[0] != 128 ||
-        ggml_backend_hrx_tensor_row_count(layer.raw) != 16384 ||
-        layer.rms_norm->ne[0] != 128 ||
+        layer.rms_norm->ne[0] != ncols ||
         ggml_backend_hrx_tensor_row_count(layer.rms_norm) !=
-            16384 ||
-        layer.norm_weight->ne[0] != 128 ||
+            nrows ||
+        layer.norm_weight->ne[0] != ncols ||
         ggml_backend_hrx_tensor_row_count(layer.norm_weight) != 1 ||
-        layer.side->ne[0] != 128 ||
-        ggml_backend_hrx_tensor_row_count(layer.side) != 16384 ||
-        ggml_nbytes(layer.raw) != side_bytes ||
-        ggml_nbytes(layer.rms_norm) != side_bytes ||
-        ggml_nbytes(layer.norm_weight) != weight_bytes ||
-        ggml_nbytes(layer.side) != side_bytes ||
+        layer.side->ne[0] != ncols ||
+        ggml_backend_hrx_tensor_row_count(layer.side) != nrows ||
         !ggml_are_same_shape(layer.raw, layer.rms_norm) ||
         !ggml_are_same_shape(layer.rms_norm, layer.side) ||
         !ggml_backend_hrx_is_f32_dense(layer.raw) ||
@@ -10578,20 +10569,13 @@ static bool ggml_backend_hrx_match_gdn_rms_side_layer(
             layer.raw,
             layer.norm_weight,
             layer.terminal,
-        }) ||
-        (layer.rms_norm->flags & GGML_TENSOR_FLAG_OUTPUT) ||
-        (layer.side->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+        })) {
         return false;
     }
-    const auto sole_consumer_is = [cgraph](
-            const ggml_tensor * producer,
-            const ggml_tensor * expected) {
-        const auto consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, producer);
-        return consumers.size() == 1 && consumers[0] == expected;
-    };
-    if (!sole_consumer_is(layer.rms_norm, layer.side) ||
-        !sole_consumer_is(layer.side, layer.terminal)) {
+    if (!ggml_backend_hrx_graph_value_is_private_to_consumer(
+            cgraph, layer.rms_norm, layer.side) ||
+        !ggml_backend_hrx_graph_value_is_private_to_consumer(
+            cgraph, layer.side, layer.terminal)) {
         return false;
     }
 
@@ -10653,10 +10637,17 @@ static bool ggml_backend_hrx_build_gdn_rms_side_graph_plan(
     candidate.node_count = cgraph->n_nodes;
     candidate.catalog = device_context->reg_context->catalog.get();
     candidate.examined = true;
+    const auto * qk_plan =
+        device_context->current_gdn_qk_scale_plan;
+    if (!qk_plan || !qk_plan->ready || qk_plan->layers.empty()) {
+        return false;
+    }
+    std::vector<std::optional<ggml_backend_hrx_gdn_rms_side_layer_plan>>
+        slots(qk_plan->layers.size());
+    std::vector<bool> conflicted(qk_plan->layers.size(), false);
     candidate.skip_mask.assign(
         static_cast<size_t>(cgraph->n_nodes), 0);
 
-    size_t matched = 0;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * terminal = cgraph->nodes[i];
         if (!terminal || terminal->op != GGML_OP_MUL) {
@@ -10667,25 +10658,36 @@ static bool ggml_backend_hrx_build_gdn_rms_side_graph_plan(
                 device_context, cgraph, terminal, &layer)) {
             continue;
         }
-        const auto slot_it = std::find(
-            ggml_backend_hrx_recurrent_cache_layers.begin(),
-            ggml_backend_hrx_recurrent_cache_layers.end(),
-            layer.layer);
-        if (slot_it ==
-            ggml_backend_hrx_recurrent_cache_layers.end()) {
-            return false;
+        const auto slot_it = std::find_if(
+            qk_plan->layers.begin(),
+            qk_plan->layers.end(),
+            [&layer](
+                    const ggml_backend_hrx_gdn_qk_scale_layer & qk) {
+                return qk.gated_delta_net ==
+                    layer.gated_delta_net;
+            });
+        if (slot_it == qk_plan->layers.end()) {
+            continue;
         }
         const size_t slot = static_cast<size_t>(
-            std::distance(
-                ggml_backend_hrx_recurrent_cache_layers.begin(),
-                slot_it));
-        if (candidate.layers[slot].terminal) {
-            return false;
+            std::distance(qk_plan->layers.begin(), slot_it));
+        if (conflicted[slot]) {
+            continue;
         }
-        candidate.layers[slot] = layer;
-        ++matched;
+        if (slots[slot].has_value()) {
+            slots[slot].reset();
+            conflicted[slot] = true;
+            continue;
+        }
+        slots[slot] = layer;
     }
-    if (matched != candidate.layers.size()) {
+    candidate.layers.reserve(slots.size());
+    for (auto & slot : slots) {
+        if (slot.has_value()) {
+            candidate.layers.push_back(std::move(*slot));
+        }
+    }
+    if (candidate.layers.empty()) {
         return false;
     }
     for (const auto & layer : candidate.layers) {
@@ -10704,11 +10706,6 @@ static bool ggml_backend_hrx_build_gdn_rms_side_graph_plan(
             }
             candidate.skip_mask[static_cast<size_t>(index)] = 1;
         }
-    }
-    if (std::count(
-            candidate.skip_mask.begin(),
-            candidate.skip_mask.end(), uint8_t{1}) != 120) {
-        return false;
     }
     candidate.ready = true;
     *out_plan = std::move(candidate);
@@ -10760,6 +10757,7 @@ static const ggml_tensor * ggml_backend_hrx_find_cache_write(
 static const ggml_tensor * ggml_backend_hrx_find_attention_view(
         const ggml_cgraph * cgraph,
         const ggml_tensor * gated_delta_net,
+        size_t length,
         const ggml_tensor ** out_consumer) {
     const ggml_tensor * found = nullptr;
     const ggml_tensor * consumer = nullptr;
@@ -10776,7 +10774,7 @@ static const ggml_tensor * ggml_backend_hrx_find_attention_view(
                 !ggml_backend_hrx_metadata_chain_reaches(
                     source, gated_delta_net) ||
                 !ggml_backend_hrx_storage_subspan(
-                    source, gated_delta_net, 0, 16384)) {
+                    source, gated_delta_net, 0, length)) {
                 continue;
             }
             if (found) {
@@ -10845,95 +10843,27 @@ static bool ggml_backend_hrx_cache_owner_has_only_expected_touches(
     return true;
 }
 
-static const ggml_backend_hrx_catalog_route *
-ggml_backend_hrx_route_for_node(
-        ggml_backend_hrx_device_context * device_context,
-        const ggml_tensor * node,
-        int node_index) {
-    if (!device_context || !node ||
-        !device_context->reg_context ||
-        !device_context->reg_context->catalog) {
-        return nullptr;
-    }
-    const int saved_node_index = device_context->current_node_index;
-    device_context->current_node_index = node_index;
-    ggml_backend_hrx_dispatch_request request = {};
-    const bool made = ggml_backend_hrx_make_dispatch_request(
-        device_context, node, &request);
-    device_context->current_node_index = saved_node_index;
-    if (!made) {
-        return nullptr;
-    }
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &request.problem, request.tensors);
-    return ggml_backend_hrx_catalog_find_route(
-        *device_context->reg_context->catalog, request.problem);
-}
-
-static const ggml_backend_hrx_catalog_route *
-ggml_backend_hrx_route_for_request(
-        ggml_backend_hrx_device_context * device_context,
+static bool ggml_backend_hrx_recurrent_cache_route_matches_request(
+        const ggml_backend_hrx_catalog_route * route,
         const ggml_backend_hrx_dispatch_request & request) {
-    if (!device_context ||
-        !device_context->reg_context ||
-        !device_context->reg_context->catalog) {
-        return nullptr;
-    }
-    ggml_backend_hrx_catalog_problem problem = request.problem;
-    ggml_backend_hrx_add_tensor_overlap_facts(
-        &problem, request.tensors);
-    return ggml_backend_hrx_catalog_find_route(
-        *device_context->reg_context->catalog, problem);
-}
-
-static bool ggml_backend_hrx_gdn_qk_scale_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id !=
-            "gated_delta_net_f32_sv128_qk_l2_full_head_wg256" ||
-        route->family != "gated_delta_net_f32" ||
-        route->op != "GATED_DELTA_NET" ||
-        route->source_id !=
-            "gated_delta_net_f32_qk_l2_full_head" ||
-        route->artifact_id !=
-            "gated_delta_net_f32_qk_l2_full_head_loombc" ||
-        route->root_symbol !=
-            "@hrx2_gated_delta_net_f32_sv128_qk_l2_full_head" ||
-        route->export_name !=
-            "hrx2_gated_delta_net_f32_sv128_qk_l2_full_head" ||
-        route->binding_count != 7 ||
-        route->parameter_count != 8 ||
-        route->constant_byte_length != sizeof(float) ||
-        !route->prepasses.empty() ||
-        route->constraints.size() != 18) {
+    const auto fusion = request.problem.supports.find("fusion");
+    if (fusion == request.problem.supports.end()) {
         return false;
     }
-    const auto layout = route->supports.find("layout");
-    const auto fusion = route->supports.find("fusion");
-    if (layout == route->supports.end() ||
-        layout->second !=
-            "state_transposed_column_per_wave_qk_l2_full_head" ||
-        fusion == route->supports.end() ||
-        fusion->second !=
-            "GATED_DELTA_NET_QK_L2_FULL_HEAD") {
-        return false;
-    }
-    for (size_t i = 0; i < 7; ++i) {
-        for (size_t j = i + 1; j < 7; ++j) {
-            if (i < 3 && j < 3) {
-                continue;
-            }
-            const std::string source =
-                "tensor_overlap." + std::to_string(i) +
-                "_" + std::to_string(j);
-            if (!ggml_backend_hrx_route_has_zero_constraint(
-                    *route, source.c_str())) {
-                return false;
-            }
-        }
-    }
-
-    return true;
+    const bool ssm =
+        fusion->second == "SSM_CONV_STATE_CACHE_DECODE" &&
+        request.tensors.size() == 4 &&
+        request.constants.empty();
+    const bool gdn =
+        fusion->second == "GATED_DELTA_NET_STATE_CACHE_DECODE" &&
+        request.tensors.size() == 7 &&
+        request.constants.size() == sizeof(float);
+    const size_t parameter_count = ssm ? 4 : gdn ? 8 : 0;
+    return parameter_count != 0 &&
+           ggml_backend_hrx_route_matches_request(route, request) &&
+           route->prepasses.empty() &&
+           route->workload_argument_sources.empty() &&
+           route->parameter_count == parameter_count;
 }
 
 static bool ggml_backend_hrx_build_gdn_qk_scale_plan(
@@ -10955,129 +10885,110 @@ static bool ggml_backend_hrx_build_gdn_qk_scale_plan(
     out_plan->catalog = device_context->reg_context->catalog.get();
     out_plan->skip_mask.assign(
         static_cast<size_t>(cgraph->n_nodes), 0);
-    // Operator tests and other direct callers may submit a production-shaped
-    // GDN as a one-node graph after materializing q/k themselves. That graph
-    // has no producers to fuse; resolve the ordinary GDN route instead of
-    // treating the absence of model-specific tensor names as a malformed
-    // whole-model fusion topology.
-    if (cgraph->n_nodes == 1 &&
-        cgraph->nodes[0] &&
-        cgraph->nodes[0]->op == GGML_OP_GATED_DELTA_NET) {
-        out_plan->valid = true;
-        return true;
-    }
 
-    auto reject = [&](const std::string & message) {
-        if (out_error) {
-            *out_error = message;
-        }
-        return false;
-    };
-    auto expected_slot = [](int layer) -> int {
-        for (size_t i = 0;
-             i < ggml_backend_hrx_recurrent_cache_layers.size();
-             ++i) {
-            if (ggml_backend_hrx_recurrent_cache_layers[i] == layer) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    };
-    auto exact_f32_strides = [](
-            const ggml_tensor * tensor,
-            size_t nb1,
-            size_t nb2,
-            size_t nb3) {
-        return tensor && tensor->type == GGML_TYPE_F32 &&
-               tensor->nb[0] == sizeof(float) &&
-               tensor->nb[1] == nb1 &&
-               tensor->nb[2] == nb2 &&
-               tensor->nb[3] == nb3;
-    };
-
-    std::array<std::optional<ggml_backend_hrx_gdn_qk_scale_layer>, 30>
-        matches;
-    int pp_gdn_count = 0;
-    const ggml_backend_hrx_catalog_route * accepted_route = nullptr;
+    std::vector<ggml_backend_hrx_gdn_qk_scale_layer> matches;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         if (!node || node->op != GGML_OP_GATED_DELTA_NET ||
             !node->src[0] || !node->src[1] ||
             !node->src[2] || !node->src[3] ||
-            !node->src[4] || !node->src[5] ||
-            !ggml_backend_hrx_shape_is(
-                node->src[2], 128, 32, 512, 1)) {
+            !node->src[4] || !node->src[5]) {
             continue;
         }
-        ++pp_gdn_count;
         const ggml_tensor * q_norm = node->src[0];
         const ggml_tensor * k_norm = node->src[1];
+        if (q_norm->op != GGML_OP_L2_NORM ||
+            k_norm->op != GGML_OP_L2_NORM ||
+            !q_norm->src[0] || !k_norm->src[0]) {
+            continue;
+        }
+
         const ggml_tensor * raw_q = q_norm->src[0];
         const ggml_tensor * raw_k = k_norm->src[0];
         const ggml_tensor * v = node->src[2];
-        int layer = -1;
-        if (!ggml_backend_hrx_parse_exact_layer_name(
-                q_norm, "q_conv_predelta-", &layer) ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                k_norm, "k_conv_predelta-", layer) ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                raw_q, "q_conv-", layer) ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                raw_k, "k_conv-", layer)) {
-            return reject(
-                "PP512 GDN q/k normalization names are not exact");
+        const ggml_tensor * g = node->src[3];
+        const ggml_tensor * beta = node->src[4];
+        const ggml_tensor * state = node->src[5];
+
+        ggml_backend_hrx_gdn_qk_scale_layer match = {};
+        match.gated_delta_net_index = i;
+        match.q_norm = q_norm;
+        match.k_norm = k_norm;
+        match.gated_delta_net = node;
+        match.raw_q = raw_q;
+        match.raw_k = raw_k;
+
+        ggml_backend_hrx_dispatch_request request = {};
+        if (!ggml_backend_hrx_make_gdn_qk_scale_request(
+                device_context, node, match, &request)) {
+            continue;
         }
-        const int slot = expected_slot(layer);
-        if (slot < 0 || matches[static_cast<size_t>(slot)]) {
-            return reject(
-                "PP512 GDN has an unexpected or duplicate layer");
+        const auto * route =
+            ggml_backend_hrx_find_request_route(
+                device_context, request);
+        if (!ggml_backend_hrx_route_matches_request(
+                route, request)) {
+            continue;
         }
-        if (q_norm->op != GGML_OP_L2_NORM ||
-            k_norm->op != GGML_OP_L2_NORM ||
-            !raw_q || !raw_k ||
-            !ggml_backend_hrx_shape_is(
-                q_norm, 128, 16, 512, 1) ||
-            !ggml_backend_hrx_shape_is(
-                k_norm, 128, 16, 512, 1) ||
-            !ggml_backend_hrx_shape_is(
-                raw_q, 128, 16, 512, 1) ||
-            !ggml_backend_hrx_shape_is(
-                raw_k, 128, 16, 512, 1) ||
-            !ggml_backend_hrx_shape_is(
-                node->src[3], 1, 32, 512, 1) ||
-            !ggml_backend_hrx_shape_is(
-                node->src[4], 1, 32, 512, 1) ||
-            !ggml_backend_hrx_shape_is(
-                node->src[5], 128, 128, 32, 1) ||
-            ggml_get_op_params_i32(node, 0) != 1 ||
-            !exact_f32_strides(
-                q_norm, 512, 8192, 4194304) ||
-            !exact_f32_strides(
-                k_norm, 512, 8192, 4194304) ||
-            !exact_f32_strides(
-                raw_q, 512, 32768, 16777216) ||
-            !exact_f32_strides(
-                raw_k, 512, 32768, 16777216) ||
-            !exact_f32_strides(
-                v, 512, 32768, 16777216) ||
-            !exact_f32_strides(
-                node->src[3], 4, 128, 65536) ||
-            !exact_f32_strides(
-                node->src[4], 4, 128, 65536) ||
-            !exact_f32_strides(
-                node->src[5], 512, 65536, 2097152) ||
-            q_norm->type != GGML_TYPE_F32 ||
+
+        const int q_norm_index =
+            ggml_backend_hrx_graph_node_index(cgraph, q_norm);
+        const int k_norm_index =
+            ggml_backend_hrx_graph_node_index(cgraph, k_norm);
+        if (q_norm_index < 0 || k_norm_index < 0 ||
+            q_norm_index >= i || k_norm_index >= i) {
+            continue;
+        }
+        match.q_norm_index = q_norm_index;
+        match.k_norm_index = k_norm_index;
+
+        if (q_norm->type != GGML_TYPE_F32 ||
             k_norm->type != GGML_TYPE_F32 ||
+            raw_q->type != GGML_TYPE_F32 ||
+            raw_k->type != GGML_TYPE_F32 ||
+            v->type != GGML_TYPE_F32 ||
+            g->type != GGML_TYPE_F32 ||
+            beta->type != GGML_TYPE_F32 ||
+            state->type != GGML_TYPE_F32 ||
             node->type != GGML_TYPE_F32 ||
-            ggml_nbytes(q_norm) != 4194304 ||
-            ggml_nbytes(k_norm) != 4194304 ||
-            ggml_nbytes(node->src[3]) != 65536 ||
-            ggml_nbytes(node->src[4]) != 65536 ||
-            ggml_nbytes(node->src[5]) != 2097152 ||
-            ggml_nbytes(node) != 10485760) {
-            return reject(
-                "PP512 GDN has a noncanonical shape, stride, or byte span");
+            !ggml_are_same_shape(q_norm, raw_q) ||
+            !ggml_are_same_shape(k_norm, raw_k) ||
+            !ggml_are_same_shape(q_norm, k_norm) ||
+            !ggml_are_same_shape(raw_q, raw_k) ||
+            !ggml_are_same_stride(q_norm, k_norm) ||
+            !ggml_are_same_stride(raw_q, raw_k) ||
+            raw_q->nb[0] != sizeof(float) ||
+            raw_k->nb[0] != sizeof(float) ||
+            v->nb[0] != sizeof(float) ||
+            raw_q->nb[1] != v->nb[1] ||
+            raw_q->nb[2] != v->nb[2] ||
+            raw_q->nb[3] != v->nb[3] ||
+            raw_q->ne[0] != v->ne[0] ||
+            raw_q->ne[2] != v->ne[2] ||
+            raw_q->ne[3] != v->ne[3] ||
+            !ggml_are_same_shape(g, beta) ||
+            g->ne[0] != 1 ||
+            g->ne[1] != v->ne[1] ||
+            g->ne[2] != v->ne[2] ||
+            g->ne[3] != v->ne[3] ||
+            state->ne[0] != v->ne[0] ||
+            state->ne[1] != v->ne[0] ||
+            state->ne[2] != v->ne[1] ||
+            state->ne[3] != v->ne[3] ||
+            ggml_get_op_params_i32(node, 0) != 1 ||
+            !ggml_backend_hrx_is_f32_dense(q_norm) ||
+            !ggml_backend_hrx_is_f32_dense(k_norm) ||
+            !ggml_backend_hrx_is_f32_dense(g) ||
+            !ggml_backend_hrx_is_f32_dense(beta) ||
+            !ggml_backend_hrx_is_f32_dense(state) ||
+            !ggml_backend_hrx_is_f32_dense(node) ||
+            ggml_nbytes(node) !=
+                static_cast<size_t>(
+                    ggml_nelements(v) + ggml_nelements(state)) *
+                    sizeof(float)) {
+            continue;
         }
+
         uint32_t q_eps_bits = 0;
         uint32_t k_eps_bits = 0;
         std::memcpy(
@@ -11088,55 +10999,40 @@ static bool ggml_backend_hrx_build_gdn_qk_scale_plan(
             sizeof(k_eps_bits));
         if (q_eps_bits != 0x358637bdu ||
             k_eps_bits != 0x358637bdu) {
-            return reject(
-                "PP512 GDN q/k epsilon is not exactly 1e-6");
+            continue;
         }
 
-        const int q_norm_index =
-            ggml_backend_hrx_graph_node_index(cgraph, q_norm);
-        const int k_norm_index =
-            ggml_backend_hrx_graph_node_index(cgraph, k_norm);
-        if (q_norm_index < 0 || k_norm_index < 0 ||
-            !(q_norm_index < i && k_norm_index < i)) {
-            return reject(
-                "PP512 GDN q/k normalization order is not exact");
-        }
-        const auto q_norm_consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, q_norm);
-        const auto k_norm_consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, k_norm);
-        const auto raw_q_consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, raw_q);
-        const auto raw_k_consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, raw_k);
-        if (q_norm_consumers.size() != 1 ||
-            q_norm_consumers[0] != node ||
-            k_norm_consumers.size() != 1 ||
-            k_norm_consumers[0] != node ||
-            raw_q_consumers.size() != 1 ||
-            raw_q_consumers[0] != q_norm ||
-            raw_k_consumers.size() != 1 ||
-            raw_k_consumers[0] != k_norm) {
-            return reject(
-                "PP512 GDN q/k normalization is not private");
+        if (!ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, q_norm, node) ||
+            !ggml_backend_hrx_graph_value_is_private_to_consumer(
+                cgraph, k_norm, node) ||
+            !ggml_backend_hrx_graph_has_single_compute_consumer(
+                cgraph, raw_q, q_norm) ||
+            !ggml_backend_hrx_graph_has_single_compute_consumer(
+                cgraph, raw_k, k_norm)) {
+            continue;
         }
 
         const ggml_tensor * packed = raw_q->view_src;
+        const size_t q_span =
+            static_cast<size_t>(raw_q->ne[1]) * raw_q->nb[1];
+        const size_t k_span =
+            static_cast<size_t>(raw_k->ne[1]) * raw_k->nb[1];
         if (!packed ||
             raw_k->view_src != packed ||
             v->view_src != packed ||
-            raw_q->view_offs != 0 ||
-            raw_k->view_offs != 8192 ||
-            v->view_offs != 16384 ||
-            ggml_nbytes(packed) != 16777216 ||
+            raw_k->view_offs != raw_q->view_offs + q_span ||
+            v->view_offs != raw_k->view_offs + k_span ||
             !ggml_backend_hrx_storage_subspan(
-                raw_q, packed, 0, 16752640) ||
+                raw_q, packed, raw_q->view_offs,
+                ggml_nbytes(raw_q)) ||
             !ggml_backend_hrx_storage_subspan(
-                raw_k, packed, 8192, 16752640) ||
+                raw_k, packed, raw_k->view_offs,
+                ggml_nbytes(raw_k)) ||
             !ggml_backend_hrx_storage_subspan(
-                v, packed, 16384, 16760832)) {
-            return reject(
-                "PP512 GDN q/k/v packed projection layout is not exact");
+                v, packed, v->view_offs,
+                ggml_nbytes(v))) {
+            continue;
         }
         if (!ggml_backend_hrx_all_storage_spans_disjoint({
                 packed,
@@ -11154,78 +11050,33 @@ static bool ggml_backend_hrx_build_gdn_qk_scale_plan(
                 node->src[4],
                 node->src[5],
                 node})) {
-            return reject(
-                "PP512 GDN violates the direct prepass alias contract");
+            continue;
         }
-
-        ggml_backend_hrx_gdn_qk_scale_layer match = {};
-        match.layer = layer;
-        match.q_norm_index = q_norm_index;
-        match.k_norm_index = k_norm_index;
-        match.gated_delta_net_index = i;
-        match.q_norm = q_norm;
-        match.k_norm = k_norm;
-        match.gated_delta_net = node;
-        match.raw_q = raw_q;
-        match.raw_k = raw_k;
-
-        ggml_backend_hrx_dispatch_request request = {};
-        if (!ggml_backend_hrx_make_gdn_qk_scale_request(
-                device_context, node, match, &request)) {
-            return reject(
-                "failed to form PP512 GDN q/k scale request");
-        }
-        const auto * route =
-            ggml_backend_hrx_route_for_request(
-                device_context, request);
-        if (!ggml_backend_hrx_gdn_qk_scale_route_is_exact(route)) {
-            return reject(
-                "PP512 GDN q/k scale route is absent or has the wrong ABI");
-        }
-        if (accepted_route && route != accepted_route) {
-            return reject(
-                "PP512 GDN layers do not resolve one exact q/k scale route");
-        }
-        accepted_route = route;
-        matches[static_cast<size_t>(slot)] = match;
+        matches.push_back(match);
     }
-    if (pp_gdn_count == 0) {
+    if (matches.empty()) {
         out_plan->valid = true;
         return true;
     }
-    if (pp_gdn_count !=
-        static_cast<int>(
-            ggml_backend_hrx_recurrent_cache_layers.size())) {
-        return reject(
-            "PP512 graph has a partial GDN q/k scale topology");
-    }
 
     out_plan->layers.reserve(matches.size());
-    size_t skipped = 0;
-    for (size_t i = 0; i < matches.size(); ++i) {
-        if (!matches[i] ||
-            matches[i]->layer !=
-                ggml_backend_hrx_recurrent_cache_layers[i]) {
-            return reject(
-                "PP512 GDN q/k scale layers do not match the exact 30-layer order");
-        }
+    for (const auto & match : matches) {
         for (int index : {
-                 matches[i]->q_norm_index,
-                 matches[i]->k_norm_index}) {
+                 match.q_norm_index,
+                 match.k_norm_index}) {
             if (index < 0 || index >= cgraph->n_nodes ||
                 out_plan->skip_mask[
                     static_cast<size_t>(index)] != 0) {
-                return reject(
-                    "PP512 GDN q/k scale skip set is not one-to-one");
+                out_plan->layers.clear();
+                std::fill(
+                    out_plan->skip_mask.begin(),
+                    out_plan->skip_mask.end(), 0);
+                out_plan->valid = true;
+                return true;
             }
             out_plan->skip_mask[static_cast<size_t>(index)] = 1;
-            ++skipped;
         }
-        out_plan->layers.push_back(*matches[i]);
-    }
-    if (skipped != 60) {
-        return reject(
-            "PP512 GDN q/k scale skip set is not exactly 60 passes");
+        out_plan->layers.push_back(match);
     }
     out_plan->valid = true;
     out_plan->ready = true;
@@ -11233,98 +11084,14 @@ static bool ggml_backend_hrx_build_gdn_qk_scale_plan(
 }
 
 static bool
-ggml_backend_hrx_ssm_conv_silu_route_is_exact(
-        const ggml_backend_hrx_catalog_route * route) {
-    if (!route ||
-        route->id !=
-            "ssm_conv_f32_chan_concat_silu_regblock_wg1024" ||
-        route->family !=
-            "ssm_conv_f32_chan_concat" ||
-        route->op != "SSM_CONV" ||
-        route->source_id !=
-            "ssm_conv_f32_chan_concat_silu_regblock_wg1024" ||
-        route->artifact_id !=
-            "ssm_conv_f32_chan_concat_silu_regblock_wg1024_loombc" ||
-        route->root_symbol !=
-            "@hrx2_ssm_conv_f32_chan_concat_silu_regblock_wg1024" ||
-        route->export_name !=
-            "hrx2_ssm_conv_f32_chan_concat_silu_regblock_wg1024" ||
-        route->binding_count != 4 ||
-        route->parameter_count != 4 ||
-        route->constant_byte_length != 0 ||
-        !route->prepasses.empty() ||
-        route->constraints.size() != 5 ||
-        route->bindings.size() != 6) {
-        return false;
-    }
-    const auto layout = route->supports.find("layout");
-    const auto fusion = route->supports.find("fusion");
-    if (layout == route->supports.end() ||
-        layout->second !=
-            "conv_window_channels_first_concat_silu_regblock_wg1024" ||
-        fusion == route->supports.end() ||
-        fusion->second !=
-            "SSM_CONV_SILU_REGBLOCK_WG1024") {
-        return false;
-    }
-    for (const char * source : {
-             "tensor_overlap.0_1",
-             "tensor_overlap.0_2",
-             "tensor_overlap.0_3",
-             "tensor_overlap.1_2",
-             "tensor_overlap.2_3"}) {
-        if (!ggml_backend_hrx_route_has_zero_constraint(
-                *route, source)) {
-            return false;
-        }
-    }
-    const std::array<std::pair<const char *, const char *>, 6>
-        expected_bindings = {{
-            {"@hrx2.shape.ssm_conv.d_conv",
-             "ssm_conv.d_conv"},
-            {"@hrx2.shape.ssm_conv.d_inner",
-             "ssm_conv.d_inner"},
-            {"@hrx2.shape.ssm_conv.n_t",
-             "ssm_conv.n_t"},
-            {"@hrx2.shape.ssm_conv.n_s",
-             "ssm_conv.n_s"},
-            {"@hrx2.shape.ssm_conv.state_row_stride",
-             "ssm_conv.state_row_stride"},
-            {"@hrx2.shape.ssm_conv.x_row_stride",
-             "ssm_conv.x_row_stride"},
-        }};
-    for (size_t i = 0; i < expected_bindings.size(); ++i) {
-        if (route->bindings[i].key != expected_bindings[i].first ||
-            route->bindings[i].shape_source !=
-                expected_bindings[i].second ||
-            !route->bindings[i].value.empty()) {
-            return false;
-        }
-    }
-    const std::array<std::pair<const char *, int64_t>, 10>
-        exact_shapes = {{
-            {"ncols", 8192},
-            {"nrows", 512},
-            {"d_conv", 4},
-            {"n_t", 512},
-            {"ssm_conv.d_conv", 4},
-            {"ssm_conv.d_inner", 8192},
-            {"ssm_conv.n_t", 512},
-            {"ssm_conv.n_s", 1},
-            {"ssm_conv.state_row_stride", 8192},
-            {"ssm_conv.x_row_stride", 8192},
-        }};
-    for (const auto & [name, value] : exact_shapes) {
-        const auto minimum = route->shape_min.find(name);
-        const auto maximum = route->shape_max.find(name);
-        if (minimum == route->shape_min.end() ||
-            maximum == route->shape_max.end() ||
-            minimum->second != value ||
-            maximum->second != value) {
-            return false;
-        }
-    }
-    return true;
+ggml_backend_hrx_ssm_conv_silu_route_matches_request(
+        const ggml_backend_hrx_catalog_route * route,
+        const ggml_backend_hrx_dispatch_request & request) {
+    return ggml_backend_hrx_route_matches_request(route, request) &&
+           route->prepasses.empty() &&
+           route->workload_argument_sources.empty() &&
+           request.tensors.size() == 4 &&
+           request.constants.empty();
 }
 
 static bool
@@ -11348,58 +11115,12 @@ ggml_backend_hrx_build_ssm_conv_silu_plan(
     out_plan->skip_mask.assign(
         static_cast<size_t>(cgraph->n_nodes), 0);
 
-    auto reject = [&](const std::string & message) {
-        if (out_error) {
-            *out_error = message;
-        }
-        return false;
-    };
-    auto expected_slot = [](int layer) -> int {
-        for (size_t i = 0;
-             i < ggml_backend_hrx_recurrent_cache_layers.size();
-             ++i) {
-            if (ggml_backend_hrx_recurrent_cache_layers[i] == layer) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    };
-    auto exact_f32_strides = [](
-            const ggml_tensor * tensor,
-            size_t nb1,
-            size_t nb2,
-            size_t nb3) {
-        return tensor && tensor->type == GGML_TYPE_F32 &&
-               tensor->nb[0] == sizeof(float) &&
-               tensor->nb[1] == nb1 &&
-               tensor->nb[2] == nb2 &&
-               tensor->nb[3] == nb3;
-    };
-
-    std::array<std::optional<ggml_backend_hrx_ssm_conv_silu_layer>, 30>
-        matches;
-    int pp_ssm_count = 0;
-    const ggml_backend_hrx_catalog_route * accepted_route = nullptr;
+    std::vector<ggml_backend_hrx_ssm_conv_silu_layer> matches;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         if (!node || node->op != GGML_OP_SSM_CONV ||
-            !ggml_backend_hrx_shape_is(node, 8192, 512, 1, 1) ||
-            !node->src[1] ||
-            !ggml_backend_hrx_shape_is(
-                node->src[1], 4, 8192, 1, 1)) {
+            !node->src[0] || !node->src[1]) {
             continue;
-        }
-        ++pp_ssm_count;
-        int layer = -1;
-        if (!ggml_backend_hrx_parse_exact_layer_name(
-                node, "conv_output_raw-", &layer)) {
-            return reject(
-                "PP512 SSM convolution output name is not exact");
-        }
-        const int slot = expected_slot(layer);
-        if (slot < 0 || matches[static_cast<size_t>(slot)]) {
-            return reject(
-                "PP512 SSM convolution has an unexpected or duplicate layer");
         }
 
         const ggml_tensor * state = nullptr;
@@ -11407,60 +11128,48 @@ ggml_backend_hrx_build_ssm_conv_silu_plan(
         if (!ggml_backend_hrx_ssm_conv_window_pieces(
                 node, &state, &x) ||
             !state || !x || !node->src[0] ||
-            node->src[0]->op != GGML_OP_CONCAT ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                state, "conv_states_reshaped-", layer) ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                x, "linear_attn_qkv_mixed-", layer)) {
-            return reject(
-                "PP512 SSM convolution window pieces are not exact");
+            node->src[0]->op != GGML_OP_CONCAT) {
+            continue;
         }
-        char expected_filter[64];
-        std::snprintf(
-            expected_filter, sizeof(expected_filter),
-            "blk.%d.ssm_conv1d.weight", layer);
-        if (std::strcmp(
-                ggml_get_name(node->src[1]),
-                expected_filter) != 0 ||
-            !ggml_backend_hrx_shape_is(
-                state, 8192, 3, 1, 1) ||
-            !ggml_backend_hrx_shape_is(
-                x, 8192, 512, 1, 1) ||
-            !ggml_backend_hrx_shape_is(
-                node->src[0], 8192, 515, 1, 1) ||
-            !exact_f32_strides(
-                state, 32768, 98304, 98304) ||
-            !exact_f32_strides(
-                x, 32768, 16777216, 16777216) ||
-            !exact_f32_strides(
-                node->src[0], 32768, 16875520, 16875520) ||
-            !exact_f32_strides(
-                node->src[1], 16, 131072, 131072) ||
-            !exact_f32_strides(
-                node, 32768, 16777216, 16777216) ||
-            ggml_nbytes(state) != 98304 ||
-            ggml_nbytes(x) != 16777216 ||
-            ggml_nbytes(node->src[0]) != 16875520 ||
-            ggml_nbytes(node->src[1]) != 131072 ||
-            ggml_nbytes(node) != 16777216) {
-            return reject(
-                "PP512 SSM convolution has a noncanonical shape, stride, or byte span");
+        const ggml_tensor * window = node->src[0];
+        const ggml_tensor * filter = node->src[1];
+        if (state->type != GGML_TYPE_F32 ||
+            x->type != GGML_TYPE_F32 ||
+            window->type != GGML_TYPE_F32 ||
+            filter->type != GGML_TYPE_F32 ||
+            node->type != GGML_TYPE_F32 ||
+            state->ne[0] != x->ne[0] ||
+            state->ne[2] != x->ne[2] ||
+            state->ne[3] != x->ne[3] ||
+            window->ne[0] != x->ne[0] ||
+            window->ne[1] != state->ne[1] + x->ne[1] ||
+            window->ne[2] != x->ne[2] ||
+            window->ne[3] != x->ne[3] ||
+            filter->ne[0] != state->ne[1] + 1 ||
+            filter->ne[1] != x->ne[0] ||
+            filter->ne[2] != 1 ||
+            filter->ne[3] != 1 ||
+            node->ne[0] != x->ne[0] ||
+            node->ne[1] != x->ne[1] ||
+            node->ne[2] != x->ne[2] ||
+            node->ne[3] != x->ne[3] ||
+            !ggml_backend_hrx_is_f32_dense(state) ||
+            !ggml_backend_hrx_is_f32_dense(x) ||
+            !ggml_backend_hrx_is_f32_dense(window) ||
+            !ggml_backend_hrx_is_f32_dense(filter) ||
+            !ggml_backend_hrx_is_f32_dense(node)) {
+            continue;
         }
 
-        const ggml_tensor * window = node->src[0];
-        const int window_index =
-            ggml_backend_hrx_graph_node_index(cgraph, window);
         ggml_backend_buffer_t x_buffer = nullptr;
         size_t x_offset = 0;
         size_t x_length = 0;
-        if (window_index < 0 || window_index >= i ||
-            !ggml_backend_hrx_tensor_storage_range(
+        if (!ggml_backend_hrx_tensor_storage_range(
                 x, &x_buffer, &x_offset, &x_length) ||
             x->nb[1] == 0 ||
             GGML_HRX_SSM_X_SNAPSHOT_ROWS >
                 x_length / x->nb[1]) {
-            return reject(
-                "PP512 sparse SSM window has an invalid graph order or x span");
+            continue;
         }
         const size_t snapshot_bytes =
             GGML_HRX_SSM_X_SNAPSHOT_ROWS * x->nb[1];
@@ -11469,11 +11178,66 @@ ggml_backend_hrx_build_ssm_conv_silu_plan(
             x_offset + snapshot_bytes >
                 std::numeric_limits<size_t>::max() -
                     (x_length - snapshot_bytes)) {
-            return reject(
-                "PP512 sparse SSM x suffix range overflows");
+            continue;
+        }
+
+        const auto consumers =
+            ggml_backend_hrx_compute_consumers(cgraph, node);
+        if (consumers.size() != 1) {
+            continue;
+        }
+        const ggml_tensor * silu = consumers[0];
+        const int silu_index =
+            ggml_backend_hrx_graph_node_index(cgraph, silu);
+        if (!silu || silu->op != GGML_OP_UNARY ||
+            ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU ||
+            silu->src[0] != node ||
+            silu_index <= i ||
+            silu->type != GGML_TYPE_F32 ||
+            !ggml_are_same_shape(silu, node) ||
+            !ggml_backend_hrx_is_f32_dense(silu) ||
+            !ggml_backend_hrx_same_storage_span(node, silu)) {
+            continue;
+        }
+
+        const bool x_dst_alias =
+            ggml_backend_hrx_same_storage_span(x, silu);
+        ggml_backend_hrx_ssm_conv_silu_layer match = {};
+        match.ssm_conv_index = i;
+        match.silu_index = silu_index;
+        match.x_dst_alias = x_dst_alias;
+        match.ssm_conv = node;
+        match.silu = silu;
+        match.window = window;
+        match.state = state;
+        match.x = x;
+        match.filter = filter;
+        match.dst = silu;
+        match.node_signature =
+            ggml_backend_hrx_node_signature(match.ssm_conv);
+
+        ggml_backend_hrx_dispatch_request request = {};
+        if (!ggml_backend_hrx_make_ssm_conv_silu_request(
+                device_context, node, match, &request)) {
+            continue;
+        }
+        const auto * route =
+            ggml_backend_hrx_find_request_route(
+                device_context, request);
+        if (!ggml_backend_hrx_ssm_conv_silu_route_matches_request(
+                route, request)) {
+            continue;
+        }
+
+        const int window_index =
+            ggml_backend_hrx_graph_node_index(cgraph, window);
+        if (window_index < 0 || window_index >= i ||
+            !x_buffer) {
+            continue;
         }
         const size_t x_suffix_begin = x_offset + snapshot_bytes;
         const size_t x_end = x_offset + x_length;
+        bool suffix_is_live = true;
         for (int j = window_index + 1; j < i; ++j) {
             const ggml_tensor * writer = cgraph->nodes[j];
             if (!writer ||
@@ -11491,135 +11255,68 @@ ggml_backend_hrx_build_ssm_conv_silu_plan(
                     &writer_length) ||
                 writer_offset >
                     std::numeric_limits<size_t>::max() - writer_length) {
-                return reject(
-                    "PP512 sparse SSM cannot prove an intervening writer span");
+                suffix_is_live = false;
+                break;
             }
             const size_t writer_end = writer_offset + writer_length;
             if (writer_buffer == x_buffer &&
                 std::max(writer_offset, x_suffix_begin) <
                     std::min(writer_end, x_end)) {
-                return reject(
-                    "PP512 sparse SSM has an intervening write beyond the snapshotted x prefix");
+                suffix_is_live = false;
+                break;
             }
         }
-
-        const auto consumers =
-            ggml_backend_hrx_compute_consumers(cgraph, node);
-        if (consumers.size() != 1) {
-            return reject(
-                "PP512 SSM convolution does not have one sole consumer");
-        }
-        const ggml_tensor * silu = consumers[0];
-        const int silu_index =
-            ggml_backend_hrx_graph_node_index(cgraph, silu);
-        if (!silu || silu->op != GGML_OP_UNARY ||
-            ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU ||
-            silu->src[0] != node ||
-            silu_index <= i ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                silu, "conv_output_silu-", layer) ||
-            !ggml_backend_hrx_shape_is(
-                silu, 8192, 512, 1, 1) ||
-            !exact_f32_strides(
-                silu, 32768, 16777216, 16777216) ||
-            ggml_nbytes(silu) != 16777216 ||
-            !ggml_backend_hrx_same_storage_span(node, silu)) {
-            return reject(
-                "PP512 SSM sole consumer is not the exact in-place SiLU");
-        }
-
-        const bool x_dst_alias =
-            ggml_backend_hrx_same_storage_span(x, silu);
-        if ((!x_dst_alias &&
+        if (!suffix_is_live ||
+            ggml_backend_hrx_graph_value_is_output(cgraph, node) ||
+            (!x_dst_alias &&
              !ggml_backend_hrx_disjoint_storage_spans(x, silu)) ||
             !ggml_backend_hrx_all_storage_spans_disjoint({
-                window, x, node->src[1]}) ||
+                window, x, filter}) ||
             !ggml_backend_hrx_disjoint_storage_spans(window, silu) ||
-            !ggml_backend_hrx_disjoint_storage_spans(
-                node->src[1], silu)) {
-            return reject(
-                "PP512 SSM/SiLU violates the exact-or-disjoint alias contract");
+            !ggml_backend_hrx_disjoint_storage_spans(filter, silu)) {
+            continue;
         }
-
-        ggml_backend_hrx_ssm_conv_silu_layer match = {};
-        match.layer = layer;
-        match.ssm_conv_index = i;
-        match.silu_index = silu_index;
-        match.x_dst_alias = x_dst_alias;
-        match.ssm_conv = node;
-        match.silu = silu;
-        match.window = window;
-        match.state = state;
-        match.x = x;
-        match.filter = node->src[1];
-        match.dst = silu;
-        match.node_signature =
-            ggml_backend_hrx_node_signature(match.ssm_conv);
-
-        ggml_backend_hrx_dispatch_request request = {};
-        if (!ggml_backend_hrx_make_ssm_conv_silu_request(
-                device_context, node, match, &request)) {
-            return reject(
-                "failed to form PP512 register-blocked SSM/SiLU request");
+        if (std::any_of(
+                matches.begin(), matches.end(),
+                [&match](
+                        const ggml_backend_hrx_ssm_conv_silu_layer & other) {
+                    return other.ssm_conv == match.ssm_conv ||
+                           other.silu == match.silu ||
+                           other.window == match.window;
+                })) {
+            out_plan->valid = true;
+            return true;
         }
         match.request_fingerprint =
             ggml_backend_hrx_ssm_conv_silu_request_fingerprint(
                 match, request.tensors);
-        const auto * route =
-            ggml_backend_hrx_route_for_request(
-                device_context, request);
-        if (!ggml_backend_hrx_ssm_conv_silu_route_is_exact(route)) {
-            return reject(
-                "PP512 register-blocked SSM/SiLU route is absent or has the wrong ABI");
-        }
-        if (accepted_route && route != accepted_route) {
-            return reject(
-                "PP512 SSM/SiLU layers do not resolve one exact route");
-        }
-        accepted_route = route;
-        matches[static_cast<size_t>(slot)] = match;
+        matches.push_back(match);
     }
-    if (pp_ssm_count == 0) {
+    if (matches.empty()) {
         out_plan->valid = true;
         return true;
     }
-    if (pp_ssm_count !=
-        static_cast<int>(
-            ggml_backend_hrx_recurrent_cache_layers.size())) {
-        return reject(
-            "PP512 graph has a partial SSM_CONV-to-SiLU topology");
-    }
 
     out_plan->layers.reserve(matches.size());
-    for (size_t i = 0; i < matches.size(); ++i) {
-        if (!matches[i] ||
-            matches[i]->layer !=
-                ggml_backend_hrx_recurrent_cache_layers[i]) {
-            return reject(
-                "PP512 SSM/SiLU layers do not match the exact 30-layer order");
-        }
-        const int skip = matches[i]->silu_index;
+    for (const auto & match : matches) {
+        const int skip = match.silu_index;
         if (skip < 0 || skip >= cgraph->n_nodes ||
             out_plan->skip_mask[static_cast<size_t>(skip)] != 0) {
-            return reject(
-                "PP512 SSM/SiLU skip set is not one-to-one");
+            out_plan->layers.clear();
+            std::fill(
+                out_plan->skip_mask.begin(),
+                out_plan->skip_mask.end(), 0);
+            out_plan->alias_layers = 0;
+            out_plan->disjoint_layers = 0;
+            out_plan->valid = true;
+            return true;
         }
         out_plan->skip_mask[static_cast<size_t>(skip)] = 1;
         out_plan->alias_layers +=
-            matches[i]->x_dst_alias ? 1 : 0;
+            match.x_dst_alias ? 1 : 0;
         out_plan->disjoint_layers +=
-            matches[i]->x_dst_alias ? 0 : 1;
-        out_plan->layers.push_back(*matches[i]);
-    }
-    if (out_plan->layers.size() != 30 ||
-        out_plan->alias_layers != 19 ||
-        out_plan->disjoint_layers != 11 ||
-        std::count(
-            out_plan->skip_mask.begin(),
-            out_plan->skip_mask.end(),
-            static_cast<uint8_t>(1)) != 30) {
-        return reject(
-            "PP512 SSM/SiLU requires exactly 30 layers, 19 aliases, 11 disjoint destinations, and 30 skips");
+            match.x_dst_alias ? 0 : 1;
+        out_plan->layers.push_back(match);
     }
     out_plan->valid = true;
     out_plan->ready = true;
@@ -11646,82 +11343,105 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
     out_plan->skip_mask.assign(
         static_cast<size_t>(cgraph->n_nodes), 0);
 
-    auto reject = [&](const std::string & message) {
-        if (out_error) {
-            *out_error = message;
-        }
-        return false;
-    };
-    auto expected_slot = [](int layer) -> int {
-        for (size_t i = 0;
-             i < ggml_backend_hrx_recurrent_cache_layers.size();
-             ++i) {
-            if (ggml_backend_hrx_recurrent_cache_layers[i] == layer) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    };
-
-    std::array<std::optional<ggml_backend_hrx_recurrent_cache_layer>, 30>
-        matches;
-    int decode_ssm_count = 0;
+    std::vector<ggml_backend_hrx_recurrent_cache_layer> matches;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         if (!node || node->op != GGML_OP_SSM_CONV ||
-            !ggml_backend_hrx_shape_is(node, 8192, 1, 1, 1) ||
-            !node->src[1] ||
-            !ggml_backend_hrx_shape_is(
-                node->src[1], 4, 8192, 1, 1)) {
+            !node->src[0] || !node->src[1]) {
             continue;
         }
-        ++decode_ssm_count;
+        const ggml_tensor * state = nullptr;
+        const ggml_tensor * x = nullptr;
+        if (!ggml_backend_hrx_ssm_conv_window_pieces(
+                node, &state, &x)) {
+            continue;
+        }
         const ggml_tensor * concat = node->src[0];
         if (!concat || concat->op != GGML_OP_CONCAT ||
             ggml_get_op_params_i32(concat, 0) != 1 ||
-            !ggml_backend_hrx_shape_is(concat, 8192, 4, 1, 1) ||
             !concat->src[0] || !concat->src[1]) {
-            return reject("decode SSM convolution lacks the exact dim-1 window CONCAT");
+            continue;
         }
-        const ggml_tensor * state = concat->src[0];
-        const ggml_tensor * x = concat->src[1];
+        if (state != concat->src[0] || x != concat->src[1]) {
+            continue;
+        }
         const ggml_tensor * cache_r_get =
             ggml_backend_hrx_zero_offset_source_chain_target(
                 state, GGML_OP_GET_ROWS);
         if (!cache_r_get || !cache_r_get->src[0] ||
-            !cache_r_get->src[1] ||
-            !ggml_backend_hrx_shape_is(state, 8192, 3, 1, 1) ||
-            !ggml_backend_hrx_shape_is(x, 8192, 1, 1, 1) ||
+            !cache_r_get->src[1]) {
+            continue;
+        }
+        ggml_backend_hrx_recurrent_cache_layer match = {};
+        match.ssm_conv = node;
+        match.cache_r_owner = cache_r_get->src[0];
+        match.conv_x = x;
+        match.conv_filter = node->src[1];
+        match.conv_dst = node;
+
+        const ggml_tensor * filter = node->src[1];
+        const int64_t d_conv = filter->ne[0];
+        const int64_t d_inner = filter->ne[1];
+        const int64_t n_t = node->ne[1];
+        const int64_t n_s = node->ne[2];
+        const size_t state_bytes = ggml_nbytes(state);
+        const size_t x_bytes = ggml_nbytes(x);
+        if (d_conv < 2 || d_inner <= 0 || n_t <= 0 || n_s != 1 ||
+            n_t > std::numeric_limits<int64_t>::max() - (d_conv - 1) ||
             !ggml_backend_hrx_shape_is(
-                cache_r_get, 24576, 1, 1, 1) ||
+                state, d_inner, d_conv - 1, n_s, 1) ||
+            !ggml_backend_hrx_shape_is(x, d_inner, n_t, n_s, 1) ||
+            !ggml_backend_hrx_shape_is(
+                concat, d_inner, d_conv - 1 + n_t, n_s, 1) ||
+            !ggml_backend_hrx_shape_is(
+                filter, d_conv, d_inner, 1, 1) ||
+            !ggml_backend_hrx_shape_is(
+                node, d_inner, n_t, n_s, 1) ||
+            state->type != GGML_TYPE_F32 ||
+            x->type != GGML_TYPE_F32 ||
+            concat->type != GGML_TYPE_F32 ||
+            filter->type != GGML_TYPE_F32 ||
+            node->type != GGML_TYPE_F32 ||
+            cache_r_get->type != GGML_TYPE_F32 ||
+            cache_r_get->src[0]->type != GGML_TYPE_F32 ||
             cache_r_get->src[1]->type != GGML_TYPE_I32 ||
             ggml_nelements(cache_r_get->src[1]) != 1 ||
+            ggml_nelements(cache_r_get) != ggml_nelements(state) ||
             !ggml_backend_hrx_same_storage_span(
                 state, cache_r_get) ||
-            ggml_nbytes(cache_r_get->src[0]) != 98304 ||
-            ggml_nbytes(state) != 98304 ||
-            ggml_nbytes(x) != 32768 ||
-            ggml_nbytes(concat) != 131072 ||
-            ggml_nbytes(node->src[1]) != 131072 ||
-            ggml_nbytes(node) != 32768 ||
-            state->nb[0] != sizeof(float) ||
-            state->nb[1] != 8192 * sizeof(float) ||
-            x->nb[0] != sizeof(float) ||
-            x->nb[1] != 8192 * sizeof(float) ||
-            node->src[1]->nb[0] != sizeof(float) ||
-            node->src[1]->nb[1] != 4 * sizeof(float)) {
-            return reject("decode SSM convolution has a noncanonical cache, input, or filter shape");
+            ggml_nbytes(cache_r_get->src[0]) != state_bytes ||
+            ggml_nbytes(node) != x_bytes ||
+            state_bytes >
+                std::numeric_limits<size_t>::max() - x_bytes ||
+            ggml_nbytes(concat) != state_bytes + x_bytes ||
+            !ggml_is_contiguous(state) ||
+            !ggml_is_contiguous(x) ||
+            !ggml_is_contiguous(concat) ||
+            !ggml_is_contiguous(filter) ||
+            !ggml_is_contiguous(node) ||
+            !ggml_is_contiguous(cache_r_get->src[0]) ||
+            !ggml_is_contiguous(cache_r_get->src[1])) {
+            continue;
         }
-        const int layer =
-            ggml_backend_hrx_exact_cache_layer(
-                cache_r_get->src[0], 'r');
-        const int slot = expected_slot(layer);
-        if (slot < 0 || matches[static_cast<size_t>(slot)]) {
-            return reject("decode SSM cache-r owner has an unexpected or duplicate layer");
+        if (std::any_of(
+                matches.begin(), matches.end(),
+                [cache_r_get](
+                        const ggml_backend_hrx_recurrent_cache_layer & other) {
+                    return ggml_backend_hrx_same_storage_span(
+                        other.cache_r_owner, cache_r_get->src[0]);
+                })) {
+            continue;
         }
+        if (static_cast<size_t>(n_t) >
+            std::numeric_limits<size_t>::max() / concat->nb[1]) {
+            continue;
+        }
+        const size_t cache_r_source_offset =
+            static_cast<size_t>(n_t) * concat->nb[1];
         const ggml_tensor * cache_r_write =
             ggml_backend_hrx_find_cache_write(
-                cgraph, cache_r_get->src[0], concat, 32768, 98304);
+                cgraph, cache_r_get->src[0], concat,
+                cache_r_source_offset, state_bytes);
         const ggml_tensor * scale =
             ggml_backend_hrx_find_inplace_scale(
                 cgraph, cache_r_get->src[0]);
@@ -11741,7 +11461,7 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
               cache_r_get_index < concat_index &&
               concat_index < cache_r_write_index &&
               cache_r_write_index < i)) {
-            return reject("decode cache-r load, CONCAT, update, and SSM order is not exact");
+            continue;
         }
         const auto get_consumers =
             ggml_backend_hrx_compute_consumers(cgraph, cache_r_get);
@@ -11756,13 +11476,12 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
             std::find(
                 concat_consumers.begin(), concat_consumers.end(),
                 node) == concat_consumers.end()) {
-            return reject("decode cache-r materialization has an extra consumer");
+            continue;
         }
         const auto conv_consumers =
             ggml_backend_hrx_compute_consumers(cgraph, node);
         if (conv_consumers.size() != 1) {
-            return reject(
-                "decode SSM convolution does not have one sole consumer");
+            continue;
         }
         const ggml_tensor * silu = conv_consumers[0];
         const int silu_index =
@@ -11771,24 +11490,21 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
             ggml_get_unary_op(silu) != GGML_UNARY_OP_SILU ||
             silu->src[0] != node ||
             silu_index <= i ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                node, "conv_output_raw-", layer) ||
-            !ggml_backend_hrx_has_exact_layer_name(
-                silu, "conv_output_silu-", layer) ||
-            !ggml_backend_hrx_shape_is(
-                silu, 8192, 1, 1, 1) ||
-            node->type != GGML_TYPE_F32 ||
+            !ggml_are_same_shape(silu, node) ||
             silu->type != GGML_TYPE_F32 ||
-            silu->nb[0] != sizeof(float) ||
-            silu->nb[1] != 8192 * sizeof(float) ||
-            ggml_nbytes(silu) != 32768 ||
+            !ggml_is_contiguous(silu) ||
             !ggml_backend_hrx_same_storage_span(node, silu)) {
-            return reject(
-                "decode SSM sole consumer is not the exact in-place SiLU");
+            continue;
         }
         const bool x_dst_alias =
             ggml_backend_hrx_same_storage_span(x, silu);
-        if ((!x_dst_alias &&
+        if (ggml_backend_hrx_graph_value_is_output(
+                cgraph, cache_r_get) ||
+            ggml_backend_hrx_graph_value_is_output(
+                cgraph, concat) ||
+            ggml_backend_hrx_graph_value_is_output(
+                cgraph, node) ||
+            (!x_dst_alias &&
              !ggml_backend_hrx_disjoint_storage_spans(x, silu)) ||
             !ggml_backend_hrx_all_storage_spans_disjoint({
                 cache_r_get->src[0], x, node->src[1]}) ||
@@ -11801,81 +11517,86 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
             !ggml_backend_hrx_cache_owner_has_only_expected_touches(
                 cgraph, cache_r_get->src[0], scale,
                 cache_r_get, cache_r_write)) {
-            return reject("decode cache-r owner violates the direct convolution alias contract");
+            continue;
         }
 
-        ggml_backend_hrx_recurrent_cache_layer match = {};
-        match.layer = layer;
         match.cache_r_get_index = cache_r_get_index;
         match.concat_index = concat_index;
         match.cache_r_write_index = cache_r_write_index;
         match.ssm_conv_index = i;
         match.silu_index = silu_index;
-        match.cache_r_get = cache_r_get;
-        match.concat = concat;
-        match.cache_r_write = cache_r_write;
         match.ssm_conv = node;
         match.silu = silu;
         match.cache_r_owner = cache_r_get->src[0];
         match.conv_x = x;
         match.conv_filter = node->src[1];
         match.conv_dst = node;
-        matches[static_cast<size_t>(slot)] = match;
+        ggml_backend_hrx_dispatch_request direct_request = {};
+        if (!ggml_backend_hrx_make_ssm_conv_state_cache_request(
+                device_context, node, match, &direct_request)) {
+            continue;
+        }
+        const auto * direct_route =
+            ggml_backend_hrx_find_request_route(
+                device_context, direct_request);
+        if (!ggml_backend_hrx_recurrent_cache_route_matches_request(
+                direct_route, direct_request)) {
+            continue;
+        }
+        matches.push_back(match);
     }
-    if (decode_ssm_count == 0) {
+    if (matches.empty()) {
         out_plan->valid = true;
         return true;
     }
-    if (decode_ssm_count !=
-        static_cast<int>(ggml_backend_hrx_recurrent_cache_layers.size())) {
-        return reject("decode graph has a partial recurrent SSM topology");
-    }
-    for (const auto & match : matches) {
-        if (!match) {
-            return reject("decode graph is missing an expected recurrent SSM layer");
-        }
-    }
-
-    int decode_gdn_count = 0;
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
         if (!node || node->op != GGML_OP_GATED_DELTA_NET ||
             !node->src[0] || !node->src[1] ||
             !node->src[2] || !node->src[3] ||
-            !node->src[4] || !node->src[5] ||
-            !ggml_backend_hrx_shape_is(
-                node->src[2], 128, 32, 1, 1)) {
+            !node->src[4] || !node->src[5]) {
             continue;
         }
-        ++decode_gdn_count;
         const ggml_tensor * cache_s_get =
             ggml_backend_hrx_zero_offset_source_chain_target(
                 node->src[5], GGML_OP_GET_ROWS);
         if (!cache_s_get || !cache_s_get->src[0] ||
             !cache_s_get->src[1]) {
-            return reject("decode GDN lacks the exact cache-s GET_ROWS ancestry");
+            continue;
         }
-        const int layer =
-            ggml_backend_hrx_exact_cache_layer(
-                cache_s_get->src[0], 's');
-        const int slot = expected_slot(layer);
-        if (slot < 0 ||
-            !matches[static_cast<size_t>(slot)] ||
-            matches[static_cast<size_t>(slot)]->gated_delta_net) {
-            return reject("decode GDN cache-s owner has an unexpected or duplicate layer");
+        const ggml_tensor * v = node->src[2];
+        const ggml_tensor * state = node->src[5];
+        const int64_t attention_elements = ggml_nelements(v);
+        const int64_t state_elements = ggml_nelements(state);
+        if (attention_elements <= 0 || state_elements <= 0 ||
+            static_cast<uint64_t>(attention_elements) >
+                std::numeric_limits<size_t>::max() / sizeof(float) ||
+            static_cast<uint64_t>(state_elements) >
+                std::numeric_limits<size_t>::max() / sizeof(float)) {
+            continue;
         }
-        auto & match = *matches[static_cast<size_t>(slot)];
-        const ggml_tensor * cache_s_write =
-            ggml_backend_hrx_find_cache_write(
-                cgraph, cache_s_get->src[0], node,
-                16384, 2097152);
-        const ggml_tensor * scale =
-            ggml_backend_hrx_find_inplace_scale(
-                cgraph, cache_s_get->src[0]);
+        const size_t attention_bytes =
+            static_cast<size_t>(attention_elements) * sizeof(float);
+        const size_t state_bytes =
+            static_cast<size_t>(state_elements) * sizeof(float);
+        if (attention_bytes >
+            std::numeric_limits<size_t>::max() - state_bytes) {
+            continue;
+        }
         const ggml_tensor * attention_consumer = nullptr;
         const ggml_tensor * attention_dst =
             ggml_backend_hrx_find_attention_view(
-                cgraph, node, &attention_consumer);
+                cgraph, node, attention_bytes, &attention_consumer);
+        if (!attention_dst) {
+            continue;
+        }
+        const ggml_tensor * cache_s_write =
+            ggml_backend_hrx_find_cache_write(
+                cgraph, cache_s_get->src[0], node,
+                attention_bytes, state_bytes);
+        const ggml_tensor * scale =
+            ggml_backend_hrx_find_inplace_scale(
+                cgraph, cache_s_get->src[0]);
         const int cache_s_get_index =
             ggml_backend_hrx_graph_node_index(cgraph, cache_s_get);
         const int cache_s_write_index =
@@ -11888,49 +11609,83 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
         if (!cache_s_write || !attention_dst ||
             cache_s_get_index < 0 || cache_s_write_index < 0 ||
             (scale && scale_index < 0) ||
-            attention_consumer_index < 0 ||
-            !(match.cache_r_write_index <
-                  (scale ? scale_index : cache_s_get_index) &&
-              (!scale || scale_index < cache_s_get_index) &&
-              cache_s_get_index < match.ssm_conv_index &&
-              match.ssm_conv_index < match.silu_index &&
-              match.silu_index < i &&
-              i < cache_s_write_index &&
-              cache_s_write_index < attention_consumer_index)) {
-            return reject("decode cache-s load, GDN, update, and attention order is not exact");
+            attention_consumer_index < 0) {
+            continue;
         }
-        if (!ggml_backend_hrx_shape_is(
-                node->src[0], 128, 16, 1, 1) ||
+        auto match_it = matches.end();
+        for (auto it = matches.begin(); it != matches.end(); ++it) {
+            if (it->gated_delta_net ||
+                !(it->cache_r_write_index <
+                      (scale ? scale_index : cache_s_get_index) &&
+                  (!scale || scale_index < cache_s_get_index) &&
+                  cache_s_get_index < it->ssm_conv_index &&
+                  it->ssm_conv_index < it->silu_index &&
+                  it->silu_index < i)) {
+                continue;
+            }
+            if (match_it == matches.end() ||
+                it->ssm_conv_index > match_it->ssm_conv_index) {
+                match_it = it;
+            }
+        }
+        if (match_it == matches.end()) {
+            continue;
+        }
+        auto & match = *match_it;
+        if (!(i < cache_s_write_index &&
+              cache_s_write_index < attention_consumer_index)) {
+            continue;
+        }
+        const ggml_tensor * q = node->src[0];
+        const ggml_tensor * k = node->src[1];
+        const ggml_tensor * g = node->src[3];
+        const ggml_tensor * beta = node->src[4];
+        const int64_t s_v = v->ne[0];
+        const int64_t n_heads = v->ne[1];
+        const int64_t n_tokens = v->ne[2];
+        const int64_t n_seqs = v->ne[3];
+        const int64_t n_qk_heads = q->ne[1];
+        if (s_v <= 0 || n_heads <= 0 || n_tokens <= 0 ||
+            n_seqs <= 0 || n_qk_heads <= 0 ||
+            n_heads % n_qk_heads != 0 ||
             !ggml_backend_hrx_shape_is(
-                node->src[1], 128, 16, 1, 1) ||
+                q, s_v, n_qk_heads, n_tokens, n_seqs) ||
+            !ggml_are_same_shape(q, k) ||
+            !ggml_are_same_stride(q, k) ||
             !ggml_backend_hrx_shape_is(
-                node->src[3], 1, 32, 1, 1) ||
+                g, 1, n_heads, n_tokens, n_seqs) ||
+            !ggml_are_same_shape(g, beta) ||
             !ggml_backend_hrx_shape_is(
-                node->src[4], 1, 32, 1, 1) ||
-            !ggml_backend_hrx_shape_is(
-                node->src[5], 128, 128, 32, 1) ||
-            !ggml_backend_hrx_shape_is(
-                attention_dst, 128, 32, 1, 1) ||
+                state, s_v, s_v, n_heads, n_seqs) ||
+            !ggml_are_same_shape(attention_dst, v) ||
+            q->type != GGML_TYPE_F32 ||
+            k->type != GGML_TYPE_F32 ||
+            v->type != GGML_TYPE_F32 ||
+            g->type != GGML_TYPE_F32 ||
+            beta->type != GGML_TYPE_F32 ||
+            state->type != GGML_TYPE_F32 ||
+            node->type != GGML_TYPE_F32 ||
+            cache_s_get->type != GGML_TYPE_F32 ||
+            cache_s_get->src[0]->type != GGML_TYPE_F32 ||
+            cache_s_get->src[1]->type != GGML_TYPE_I32 ||
+            attention_dst->type != GGML_TYPE_F32 ||
+            ggml_nelements(cache_s_get->src[1]) != 1 ||
+            ggml_nelements(cache_s_get) != state_elements ||
             !ggml_backend_hrx_same_storage_span(
-                node->src[5], cache_s_get) ||
+                state, cache_s_get) ||
             ggml_get_op_params_i32(node, 0) != 1 ||
-            ggml_nbytes(cache_s_get->src[0]) != 2097152 ||
-            ggml_nbytes(node->src[5]) != 2097152 ||
-            ggml_nbytes(node) != 2113536 ||
-            ggml_nbytes(attention_dst) != 16384 ||
-            node->src[0]->nb[1] != 128 * sizeof(float) ||
-            node->src[0]->nb[2] != 2048 * sizeof(float) ||
-            node->src[0]->nb[3] != 2048 * sizeof(float) ||
-            node->src[1]->nb[1] != 128 * sizeof(float) ||
-            node->src[1]->nb[2] != 2048 * sizeof(float) ||
-            node->src[1]->nb[3] != 2048 * sizeof(float) ||
-            node->src[2]->nb[1] != 128 * sizeof(float) ||
-            node->src[2]->nb[2] != 8192 * sizeof(float) ||
-            node->src[2]->nb[3] != 8192 * sizeof(float) ||
-            node->src[4]->nb[1] != sizeof(float) ||
-            node->src[4]->nb[2] != 32 * sizeof(float) ||
-            node->src[4]->nb[3] != 32 * sizeof(float)) {
-            return reject("decode GDN has a noncanonical shape or stride");
+            ggml_nbytes(cache_s_get->src[0]) != state_bytes ||
+            ggml_nbytes(state) != state_bytes ||
+            ggml_nbytes(node) != attention_bytes + state_bytes ||
+            ggml_nbytes(attention_dst) != attention_bytes ||
+            !ggml_is_contiguous(g) ||
+            !ggml_is_contiguous(beta) ||
+            !ggml_is_contiguous(state) ||
+            !ggml_is_contiguous(node) ||
+            !ggml_is_contiguous(cache_s_get->src[0]) ||
+            !ggml_is_contiguous(cache_s_get->src[1]) ||
+            !ggml_is_contiguous(attention_dst)) {
+            continue;
         }
         const auto state_consumers =
             ggml_backend_hrx_compute_consumers(cgraph, cache_s_get);
@@ -11945,169 +11700,65 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
             std::find(
                 gdn_consumers.begin(), gdn_consumers.end(),
                 attention_consumer) == gdn_consumers.end()) {
-            return reject("decode cache-s materialization has an extra consumer");
+            continue;
         }
-        std::vector<const ggml_tensor *> direct_gdn = {
-            node->src[0], node->src[1], node->src[2],
-            node->src[3], node->src[4],
-            cache_s_get->src[0], attention_dst,
-        };
-        if (!ggml_backend_hrx_all_storage_spans_disjoint(direct_gdn) ||
+        if (ggml_backend_hrx_graph_value_is_output(
+                cgraph, cache_s_get) ||
+            ggml_backend_hrx_graph_value_is_output(
+                cgraph, node) ||
+            !ggml_backend_hrx_all_storage_spans_disjoint({
+                node->src[0], node->src[1], node->src[2],
+                node->src[3], node->src[4],
+                cache_s_get->src[0], attention_dst}) ||
             !ggml_backend_hrx_disjoint_storage_spans(
                 cache_s_get->src[0], node->src[5]) ||
-            !ggml_backend_hrx_storage_spans_adjacent(
-                match.cache_r_owner, cache_s_get->src[0]) ||
             !ggml_backend_hrx_cache_owner_has_only_expected_touches(
                 cgraph, cache_s_get->src[0], scale,
                 cache_s_get, cache_s_write)) {
-            return reject("decode cache-s owner violates the direct GDN alias contract");
+            continue;
+        }
+
+        ggml_backend_hrx_recurrent_cache_layer direct = {};
+        direct.gated_delta_net = node;
+        direct.cache_s_owner = cache_s_get->src[0];
+        direct.attention_dst = attention_dst;
+        ggml_backend_hrx_dispatch_request direct_request = {};
+        if (!ggml_backend_hrx_make_gdn_state_cache_request(
+                device_context, node, direct, &direct_request)) {
+            continue;
+        }
+        const auto * direct_route =
+            ggml_backend_hrx_find_request_route(
+                device_context, direct_request);
+        if (!ggml_backend_hrx_recurrent_cache_route_matches_request(
+                direct_route, direct_request)) {
+            continue;
         }
 
         match.cache_s_get_index = cache_s_get_index;
         match.gated_delta_net_index = i;
         match.cache_s_write_index = cache_s_write_index;
-        match.cache_s_get = cache_s_get;
         match.gated_delta_net = node;
-        match.cache_s_write = cache_s_write;
         match.cache_s_owner = cache_s_get->src[0];
         match.attention_dst = attention_dst;
     }
-    if (decode_gdn_count !=
-        static_cast<int>(ggml_backend_hrx_recurrent_cache_layers.size())) {
-        return reject("decode graph has a partial recurrent GDN topology");
+
+    matches.erase(
+        std::remove_if(
+            matches.begin(), matches.end(),
+            [](const ggml_backend_hrx_recurrent_cache_layer & layer) {
+                return !layer.gated_delta_net ||
+                       !layer.cache_s_owner;
+            }),
+        matches.end());
+    if (matches.empty()) {
+        out_plan->valid = true;
+        return true;
     }
 
-    out_plan->layers.reserve(matches.size());
-    for (size_t i = 0; i < matches.size(); ++i) {
-        if (!matches[i] ||
-            !matches[i]->gated_delta_net ||
-            matches[i]->layer !=
-                ggml_backend_hrx_recurrent_cache_layers[i]) {
-            return reject("decode recurrent layers do not match the exact 30-layer order");
-        }
-        if (i > 0 &&
-            !ggml_backend_hrx_storage_spans_adjacent(
-                matches[i - 1]->cache_s_owner,
-                matches[i]->cache_r_owner)) {
-            return reject("decode recurrent cache slots are not packed consecutively");
-        }
-        out_plan->layers.push_back(*matches[i]);
-    }
-
-    const auto & probe = out_plan->layers.front();
-    std::vector<std::pair<const ggml_tensor *, const char *>>
-        reference_routes = {
-            {probe.cache_r_get, "get_rows_wide_f32_wg256"},
-            {probe.concat, "concat_f32_dim0_wide_wg256"},
-            {probe.cache_r_write, "cont_strided_f32_wide_wg256"},
-            {probe.cache_s_get, "get_rows_wide_f32_wg256"},
-            // Outside the validated recurrent plan, materialize the CONCAT and
-            // use the alias-safe ordinary convolution. The plan below replaces
-            // it with the direct cache-r route before graph execution.
-            {probe.ssm_conv, "ssm_conv_f32_chan_wg256"},
-            {probe.silu, "silu_f32_wide_wg256"},
-            {probe.gated_delta_net, "gated_delta_net_f32_sv128_wg128"},
-            {probe.cache_s_write, "cont_strided_f32_wide_wg256"},
-        };
-    for (const ggml_tensor * scale : {
-             ggml_backend_hrx_find_inplace_scale(
-                 cgraph, probe.cache_r_owner),
-             ggml_backend_hrx_find_inplace_scale(
-                 cgraph, probe.cache_s_owner)}) {
-        if (scale) {
-            reference_routes.emplace_back(
-                scale, "scale_f32_generic_wg256");
-        }
-    }
-    for (const auto & [node, route_id] : reference_routes) {
-        const int index =
-            ggml_backend_hrx_graph_node_index(cgraph, node);
-        const auto * route =
-            ggml_backend_hrx_route_for_node(
-                device_context, node, index);
-        if (!route || route->id != route_id) {
-            return reject(
-                std::string("decode reference route mismatch: ") +
-                route_id);
-        }
-    }
-
-    ggml_backend_hrx_dispatch_request ssm_request = {};
-    if (!ggml_backend_hrx_make_ssm_conv_state_cache_request(
-            device_context, probe.ssm_conv, probe, &ssm_request)) {
-        return reject("failed to form direct cache-r SSM request");
-    }
-    const auto * ssm_route =
-        ggml_backend_hrx_route_for_request(
-            device_context, ssm_request);
-    if (!ssm_route ||
-        ssm_route->id !=
-            "ssm_conv_f32_state_cache_decode_wg256" ||
-        ssm_route->family !=
-            "ssm_conv_f32_chan_concat" ||
-        ssm_route->op != "SSM_CONV" ||
-        ssm_route->source_id !=
-            "ssm_conv_f32_state_cache_decode" ||
-        ssm_route->artifact_id !=
-            "ssm_conv_f32_state_cache_decode_loombc" ||
-        ssm_route->root_symbol !=
-            "@hrx2_ssm_conv_f32_state_cache_decode" ||
-        ssm_route->binding_count != 4 ||
-        ssm_route->parameter_count != 4 ||
-        ssm_route->constant_byte_length != 0) {
-        return reject("direct cache-r SSM route is absent or has the wrong ABI");
-    }
-
-    ggml_backend_hrx_dispatch_request gdn_request = {};
-    if (!ggml_backend_hrx_make_gdn_state_cache_request(
-            device_context, probe.gated_delta_net,
-            probe, &gdn_request)) {
-        return reject("failed to form direct cache-s GDN request");
-    }
-    const auto * gdn_route =
-        ggml_backend_hrx_route_for_request(
-            device_context, gdn_request);
-    if (!gdn_route ||
-        gdn_route->id !=
-            "gated_delta_net_f32_state_cache_decode_wg64" ||
-        gdn_route->family !=
-            "gated_delta_net_f32" ||
-        gdn_route->op != "GATED_DELTA_NET" ||
-        gdn_route->source_id !=
-            "gated_delta_net_f32_state_cache_decode" ||
-        gdn_route->artifact_id !=
-            "gated_delta_net_f32_state_cache_decode_loombc" ||
-        gdn_route->root_symbol !=
-            "@hrx2_gated_delta_net_f32_sv128_state_cache_decode" ||
-        gdn_route->binding_count != 7 ||
-        gdn_route->parameter_count != 8 ||
-        gdn_route->constant_byte_length != 4) {
-        return reject("direct cache-s GDN route is absent or has the wrong ABI");
-    }
-
-    for (const auto & layer : out_plan->layers) {
-        ggml_backend_hrx_dispatch_request layer_ssm_request = {};
-        if (!ggml_backend_hrx_make_ssm_conv_state_cache_request(
-                device_context, layer.ssm_conv,
-                layer, &layer_ssm_request) ||
-            ggml_backend_hrx_route_for_request(
-                device_context, layer_ssm_request) != ssm_route) {
-            return reject(
-                "not every recurrent layer resolves the direct cache-r SSM route");
-        }
-        ggml_backend_hrx_dispatch_request layer_gdn_request = {};
-        if (!ggml_backend_hrx_make_gdn_state_cache_request(
-                device_context, layer.gated_delta_net,
-                layer, &layer_gdn_request) ||
-            ggml_backend_hrx_route_for_request(
-                device_context, layer_gdn_request) != gdn_route) {
-            return reject(
-                "not every recurrent layer resolves the direct cache-s GDN route");
-        }
-    }
-
-    size_t skipped = 0;
-    for (const auto & layer : out_plan->layers) {
+    std::vector<uint8_t> skip_mask(
+        static_cast<size_t>(cgraph->n_nodes), 0);
+    for (const auto & layer : matches) {
         for (int index : {
                  layer.cache_r_get_index,
                  layer.concat_index,
@@ -12116,16 +11767,119 @@ static bool ggml_backend_hrx_build_recurrent_cache_plan(
                  layer.silu_index,
                  layer.cache_s_write_index}) {
             if (index < 0 || index >= cgraph->n_nodes ||
-                out_plan->skip_mask[static_cast<size_t>(index)] != 0) {
-                return reject("decode recurrent skip set is not one-to-one");
+                skip_mask[static_cast<size_t>(index)] != 0) {
+                out_plan->valid = true;
+                return true;
             }
-            out_plan->skip_mask[static_cast<size_t>(index)] = 1;
-            ++skipped;
+            skip_mask[static_cast<size_t>(index)] = 1;
         }
     }
-    if (skipped != 180) {
-        return reject("decode recurrent skip set is not exactly 180 passes");
+
+    struct x_lifetime {
+        size_t layer_index = 0;
+        ggml_backend_buffer_t buffer = nullptr;
+        uintptr_t begin = 0;
+        uintptr_t end = 0;
+    };
+    const auto make_x_lifetime = [&](
+            size_t layer_index,
+            x_lifetime * lifetime) {
+        const ggml_tensor * x = matches[layer_index].conv_x;
+        const ggml_backend_buffer_t buffer =
+            ggml_backend_hrx_tensor_storage_buffer(x);
+        const size_t length = x ? ggml_nbytes(x) : 0;
+        const uintptr_t begin =
+            x && x->data
+                ? reinterpret_cast<uintptr_t>(x->data)
+                : 0;
+        if (!lifetime || !buffer || !x || !x->data ||
+            length == 0 ||
+            begin > std::numeric_limits<uintptr_t>::max() - length) {
+            return false;
+        }
+        *lifetime = {
+            /* .layer_index = */ layer_index,
+            /* .buffer = */ buffer,
+            /* .begin = */ begin,
+            /* .end = */ begin + length,
+        };
+        return true;
+    };
+    std::vector<x_lifetime> lifetimes(matches.size());
+    for (size_t i = 0; i < matches.size(); ++i) {
+        if (!make_x_lifetime(i, &lifetimes[i])) {
+            out_plan->valid = true;
+            return true;
+        }
     }
+    std::sort(
+        lifetimes.begin(), lifetimes.end(),
+        [&matches](
+                const x_lifetime & lhs,
+                const x_lifetime & rhs) {
+            return matches[lhs.layer_index].concat_index <
+                   matches[rhs.layer_index].concat_index;
+        });
+    std::vector<size_t> active_lifetimes;
+    active_lifetimes.reserve(lifetimes.size());
+    size_t next_lifetime = 0;
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        active_lifetimes.erase(
+            std::remove_if(
+                active_lifetimes.begin(),
+                active_lifetimes.end(),
+                [&lifetimes, &matches, i](size_t lifetime_index) {
+                    return matches[
+                               lifetimes[lifetime_index].layer_index]
+                                   .ssm_conv_index <= i;
+                }),
+            active_lifetimes.end());
+        while (next_lifetime < lifetimes.size() &&
+               matches[lifetimes[next_lifetime].layer_index]
+                       .concat_index < i) {
+            if (matches[lifetimes[next_lifetime].layer_index]
+                    .ssm_conv_index > i) {
+                active_lifetimes.push_back(next_lifetime);
+            }
+            ++next_lifetime;
+        }
+        if (active_lifetimes.empty() ||
+            skip_mask[static_cast<size_t>(i)] != 0) {
+            continue;
+        }
+        const ggml_tensor * writer = cgraph->nodes[i];
+        if (!writer ||
+            ggml_backend_hrx_is_metadata_op(writer) ||
+            ggml_backend_hrx_is_empty_op(writer)) {
+            continue;
+        }
+        const ggml_backend_buffer_t writer_buffer =
+            ggml_backend_hrx_tensor_storage_buffer(writer);
+        const size_t writer_length = ggml_nbytes(writer);
+        const uintptr_t writer_begin =
+            writer->data
+                ? reinterpret_cast<uintptr_t>(writer->data)
+                : 0;
+        if (!writer_buffer || !writer->data ||
+            writer_length == 0 ||
+            writer_begin >
+                std::numeric_limits<uintptr_t>::max() - writer_length) {
+            out_plan->valid = true;
+            return true;
+        }
+        const uintptr_t writer_end = writer_begin + writer_length;
+        for (const size_t lifetime_index : active_lifetimes) {
+            const auto & lifetime = lifetimes[lifetime_index];
+            if (writer_buffer == lifetime.buffer &&
+                writer_begin < lifetime.end &&
+                lifetime.begin < writer_end) {
+                out_plan->valid = true;
+                return true;
+            }
+        }
+    }
+    out_plan->layers = std::move(matches);
+    out_plan->skip_mask = std::move(skip_mask);
     out_plan->valid = true;
     out_plan->ready = true;
     return true;
@@ -12186,7 +11940,8 @@ ggml_backend_hrx_ssm_conv_silu_memo_matches(
     const auto & memo =
         device_context->resolved_dispatches.find(layer.ssm_conv)->second;
     return
-        ggml_backend_hrx_ssm_conv_silu_route_is_exact(memo.route) &&
+        ggml_backend_hrx_ssm_conv_silu_route_matches_request(
+            memo.route, request) &&
         memo.route->prepasses.empty() &&
         memo.prepass_free &&
         memo.compiled &&
@@ -12203,7 +11958,7 @@ ggml_backend_hrx_ssm_conv_silu_seed_set_matches(
         ggml_backend_hrx_device_context * device_context,
         const ggml_cgraph * cgraph,
         const ggml_backend_hrx_ssm_conv_silu_plan & plan) {
-    if (!plan.valid || !plan.ready || plan.layers.size() != 30) {
+    if (!plan.valid || !plan.ready || plan.layers.empty()) {
         return false;
     }
     for (const auto & layer : plan.layers) {
@@ -12251,22 +12006,6 @@ ggml_backend_hrx_clear_ssm_conv_silu_plan(
 }
 
 static bool
-ggml_backend_hrx_graph_has_pp_ssm_conv_silu_candidate(
-        const ggml_cgraph * cgraph) {
-    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
-        const ggml_tensor * node = cgraph->nodes[i];
-        if (node && node->op == GGML_OP_SSM_CONV &&
-            ggml_backend_hrx_shape_is(node, 8192, 512, 1, 1) &&
-            node->src[1] &&
-            ggml_backend_hrx_shape_is(
-                node->src[1], 4, 8192, 1, 1)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool
 ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
         ggml_backend_hrx_context * context,
         const ggml_cgraph * cgraph,
@@ -12279,15 +12018,13 @@ ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
         return false;
     };
     if (!context || !context->device_context || !cgraph ||
-        !plan.valid || !plan.ready || plan.layers.size() != 30 ||
+        !plan.valid || !plan.ready || plan.layers.empty() ||
         !context->device_context->reg_context ||
         !context->device_context->reg_context->catalog) {
         return reject("cannot seed an incomplete SSM_CONV/SiLU plan");
     }
     std::vector<ggml_backend_hrx_ssm_conv_silu_dispatch_seed> pending;
     pending.reserve(plan.layers.size());
-    const ggml_backend_hrx_catalog_route * accepted_route = nullptr;
-    ggml_backend_hrx_compiled_route * accepted_compiled = nullptr;
     for (const auto & layer : plan.layers) {
         ggml_backend_hrx_dispatch_request request = {};
         if (layer.ssm_conv_index < 0 ||
@@ -12312,19 +12049,11 @@ ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
             return reject(
                 "validated SSM_CONV/SiLU request fingerprint changed");
         }
-        ggml_backend_hrx_add_tensor_overlap_facts(
-            &request.problem, request.tensors);
         const auto * route =
-            ggml_backend_hrx_catalog_find_route(
-                *context->device_context->reg_context->catalog,
-                request.problem);
-        if (!ggml_backend_hrx_ssm_conv_silu_route_is_exact(route) ||
-            !route->prepasses.empty() ||
-            !route->workload_argument_sources.empty() ||
-            request.tensors.size() != 4 ||
-            !request.constants.empty() ||
-            route->binding_count != request.tensors.size() ||
-            route->constant_byte_length != request.constants.size()) {
+            ggml_backend_hrx_find_request_route(
+                context->device_context, request);
+        if (!ggml_backend_hrx_ssm_conv_silu_route_matches_request(
+                route, request)) {
             return reject(
                 "validated SSM_CONV/SiLU request no longer resolves its exact prepass-free route");
         }
@@ -12359,18 +12088,17 @@ ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
                 "failed to compile the validated SSM_CONV/SiLU route");
         }
         if (compiled->route != route ||
-            compiled->export_info.binding_count != 4 ||
-            compiled->export_info.parameter_count != 4 ||
-            compiled->export_info.constant_byte_length != 0 ||
+            compiled->export_info.binding_count !=
+                route->binding_count ||
+            compiled->export_info.parameter_count !=
+                route->parameter_count ||
+            compiled->export_info.constant_byte_length !=
+                route->constant_byte_length ||
             compiled->launch_config.workload_argument_count != 0 ||
-            !workload.empty() ||
-            (accepted_route && accepted_route != route) ||
-            (accepted_compiled && accepted_compiled != compiled)) {
+            !workload.empty()) {
             return reject(
                 "validated SSM_CONV/SiLU route has inconsistent compiled ABI or workload");
         }
-        accepted_route = route;
-        accepted_compiled = compiled;
 
         ggml_backend_hrx_ssm_conv_silu_dispatch_seed seed = {};
         seed.node = layer.ssm_conv;
@@ -12384,9 +12112,9 @@ ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
         seed.compiled = compiled;
         pending.emplace_back(std::move(seed));
     }
-    if (pending.size() != 30) {
+    if (pending.size() != plan.layers.size()) {
         return reject(
-            "SSM_CONV/SiLU dispatch seed set is not exactly 30 entries");
+            "SSM_CONV/SiLU dispatch seed set is incomplete");
     }
     for (const auto & seed : pending) {
         const auto existing =
@@ -12424,18 +12152,7 @@ ggml_backend_hrx_prepare_ssm_conv_silu_plan_miss(
     std::unique_ptr<ggml_backend_hrx_ssm_conv_silu_plan> candidate(
         new (std::nothrow) ggml_backend_hrx_ssm_conv_silu_plan);
     std::string ssm_conv_silu_error;
-    if (!candidate ||
-        !ggml_backend_hrx_build_ssm_conv_silu_plan(
-            context->device_context,
-            cgraph,
-            candidate.get(),
-            &ssm_conv_silu_error) ||
-        !candidate->ready ||
-        !ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
-            context,
-            cgraph,
-            *candidate,
-            &ssm_conv_silu_error)) {
+    auto reject = [&]() {
         ggml_backend_hrx_trace_event(
             context->device_context->reg_context, {
                 {"event", "ssm_conv_silu_plan_rejected"},
@@ -12451,9 +12168,28 @@ ggml_backend_hrx_prepare_ssm_conv_silu_plan_miss(
         context->device_context->current_graph = nullptr;
         context->device_context->current_node_index = -1;
         return false;
+    };
+    if (!candidate ||
+        !ggml_backend_hrx_build_ssm_conv_silu_plan(
+            context->device_context,
+            cgraph,
+            candidate.get(),
+            &ssm_conv_silu_error)) {
+        return reject();
+    }
+    if (candidate->ready &&
+        !ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
+            context,
+            cgraph,
+            *candidate,
+            &ssm_conv_silu_error)) {
+        return reject();
     }
     candidate->owner = context;
     context->device_context->ssm_conv_silu_plan = std::move(candidate);
+    if (!context->device_context->ssm_conv_silu_plan->ready) {
+        return true;
+    }
     ggml_backend_hrx_trace_event(
         context->device_context->reg_context, {
             {"event", "ssm_conv_silu_plan_ready"},
@@ -12463,8 +12199,10 @@ ggml_backend_hrx_prepare_ssm_conv_silu_plan_miss(
              context->device_context->ssm_conv_silu_plan->alias_layers},
             {"disjoint_layers",
              context->device_context->ssm_conv_silu_plan->disjoint_layers},
-            {"skipped_materializations", 30},
-            {"seeded_dispatches", 30},
+            {"skipped_materializations",
+             context->device_context->ssm_conv_silu_plan->layers.size()},
+            {"seeded_dispatches",
+             context->device_context->ssm_conv_silu_plan->layers.size()},
         });
     return true;
 }
@@ -12491,14 +12229,14 @@ ggml_backend_hrx_prepare_ssm_conv_silu_for_pp(
         plan->graph_uid == cgraph->uid &&
         plan->node_count == cgraph->n_nodes &&
         plan->catalog == active_catalog;
-    if (plan_hit &&
+    if (plan_hit && plan->ready &&
         !ggml_backend_hrx_ssm_conv_silu_seed_set_matches(
             context->device_context, cgraph, *plan)) {
         std::string error;
         if (!ggml_backend_hrx_seed_ssm_conv_silu_dispatches(
                 context, cgraph, *plan, &error)) {
             GGML_LOG_ERROR(
-                "%s: failed to restore PP512 SSM_CONV/SiLU dispatch seeds: %s\n",
+                "%s: failed to restore SSM_CONV/SiLU dispatch seeds: %s\n",
                 __func__, error.c_str());
             ggml_backend_hrx_clear_ssm_conv_silu_plan(
                 context->device_context);
@@ -12506,13 +12244,12 @@ ggml_backend_hrx_prepare_ssm_conv_silu_for_pp(
         }
     }
     if (!plan_hit) {
+        context->fusion_graph_uid = 0;
         if (plan) {
             ggml_backend_hrx_clear_ssm_conv_silu_plan(
                 context->device_context);
         }
         if (cgraph->uid != 0 &&
-            ggml_backend_hrx_graph_has_pp_ssm_conv_silu_candidate(
-                cgraph) &&
             !ggml_backend_hrx_prepare_ssm_conv_silu_plan_miss(
                 context, cgraph, __func__)) {
             return false;
@@ -12590,8 +12327,10 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                     {"event", "recurrent_cache_plan_ready"},
                     {"layer_count",
                      context->recurrent_cache_plan.layers.size()},
-                    {"skipped_materializations", 180},
-                    {"producer_dispatches", 60},
+                    {"skipped_materializations",
+                     context->recurrent_cache_plan.layers.size() * 6},
+                    {"producer_dispatches",
+                     context->recurrent_cache_plan.layers.size() * 2},
             });
         }
     }
@@ -12606,10 +12345,6 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                  ? context->device_context->reg_context->catalog.get()
                  : nullptr);
     if (!gdn_qk_scale_plan_hit && cgraph) {
-        if (context->device_context->ssm_conv_silu_plan) {
-            ggml_backend_hrx_clear_ssm_conv_silu_plan(
-                context->device_context);
-        }
         std::string gdn_qk_scale_error;
         if (!ggml_backend_hrx_build_gdn_qk_scale_plan(
                 context->device_context,
@@ -12635,25 +12370,27 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
     if (cgraph && context->gdn_qk_scale_plan.ready) {
         context->device_context->current_gdn_qk_scale_plan =
             &context->gdn_qk_scale_plan;
-        if (!ggml_backend_hrx_prepare_ssm_conv_silu_for_pp(
-                context, cgraph)) {
-            context->device_context->current_recurrent_cache_plan =
-                nullptr;
-            context->device_context->current_gdn_qk_scale_plan =
-                nullptr;
-            context->device_context->current_graph = nullptr;
-            context->device_context->current_node_index = -1;
-            return GGML_STATUS_FAILED;
-        }
         if (!gdn_qk_scale_plan_hit) {
             ggml_backend_hrx_trace_event(
                 context->device_context->reg_context, {
                     {"event", "gdn_qk_scale_plan_ready"},
                     {"layer_count",
                      context->gdn_qk_scale_plan.layers.size()},
-                    {"skipped_materializations", 60},
+                    {"skipped_materializations",
+                     context->gdn_qk_scale_plan.layers.size() * 2},
             });
         }
+    }
+    if (cgraph &&
+        !ggml_backend_hrx_prepare_ssm_conv_silu_for_pp(
+            context, cgraph)) {
+        context->device_context->current_recurrent_cache_plan =
+            nullptr;
+        context->device_context->current_gdn_qk_scale_plan =
+            nullptr;
+        context->device_context->current_graph = nullptr;
+        context->device_context->current_node_index = -1;
+        return GGML_STATUS_FAILED;
     }
     const bool gdn_rms_side_cache_hit =
         cgraph && cgraph->uid != 0 &&
@@ -12665,8 +12402,8 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                  ? context->device_context->reg_context->catalog.get()
                  : nullptr);
     if (!gdn_rms_side_cache_hit) {
-        // Publish the terminal route and producer mask only when all thirty
-        // recurrent layers resolve the exact standalone-scale route.
+        // Publish the terminal route and producer mask only when every
+        // discovered recurrent layer resolves the fused route.
         context->gdn_rms_side_plan = {};
         context->gdn_rms_side_plan.graph_uid =
             cgraph ? cgraph->uid : 0;
@@ -12683,18 +12420,6 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
             context->gdn_rms_side_plan = std::move(candidate);
         }
     }
-    if (context->device_context->current_gdn_qk_scale_plan &&
-        !context->gdn_rms_side_plan.ready) {
-        // A ready q/k-scale plan identifies the exact PP512 recurrent graph.
-        // Do not silently run its old RMS materialization path when the
-        // admitted terminal route or any one of the thirty layer contracts
-        // failed to resolve.
-        context->device_context->current_recurrent_cache_plan = nullptr;
-        context->device_context->current_gdn_qk_scale_plan = nullptr;
-        context->device_context->current_graph = nullptr;
-        context->device_context->current_node_index = -1;
-        return GGML_STATUS_FAILED;
-    }
     if (context->gdn_rms_side_plan.ready) {
         context->device_context->current_gdn_rms_side_plan =
             &context->gdn_rms_side_plan;
@@ -12709,9 +12434,8 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                  ? context->device_context->reg_context->catalog.get()
                  : nullptr);
     if (!terminal_qact_cache_hit) {
-        // Publish only the complete 36-Q5/4-Q6 PP topology. Producer and
-        // consumer routes are selected together, so a partial catalog can
-        // never expose qact scratch without its exact reader.
+        // Producer and consumer routes are selected together, so qact scratch
+        // is published only for complete topology matches with an exact reader.
         context->terminal_qact_plan = {};
         context->terminal_qact_plan.graph_uid =
             cgraph ? cgraph->uid : 0;
@@ -12726,18 +12450,13 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         if (ggml_backend_hrx_build_terminal_qact_graph_plan(
                 context->device_context, cgraph, &candidate)) {
             context->terminal_qact_plan = std::move(candidate);
+        } else if (ggml_backend_hrx_trace_enabled(
+                       context->device_context->reg_context)) {
+            ggml_backend_hrx_trace_event(
+                context->device_context->reg_context, {
+                    {"event", "terminal_qact_plan_rejected"},
+                });
         }
-    }
-    if (context->device_context->current_gdn_qk_scale_plan &&
-        !context->terminal_qact_plan.ready) {
-        // The GDN q/k plan is the established exact-PP512 discriminator.
-        // Never fall back to the old Q5 activation path on that graph.
-        context->device_context->current_recurrent_cache_plan = nullptr;
-        context->device_context->current_gdn_qk_scale_plan = nullptr;
-        context->device_context->current_gdn_rms_side_plan = nullptr;
-        context->device_context->current_graph = nullptr;
-        context->device_context->current_node_index = -1;
-        return GGML_STATUS_FAILED;
     }
     if (context->terminal_qact_plan.ready) {
         context->device_context->current_terminal_qact_plan =
@@ -12747,7 +12466,7 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                 context->device_context->reg_context, {
                     {"event", "terminal_qact_plan_ready"},
                     {"layer_count",
-                     context->terminal_qact_plan.layer_count},
+                     context->terminal_qact_plan.layers.size()},
                     {"scratch_bytes",
                      GGML_HRX_MMID_QACT_END},
             });
@@ -12764,10 +12483,7 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                  ? context->device_context->reg_context->catalog.get()
                  : nullptr);
     if (!moe_router_tail_cache_hit) {
-        // Publish only a completely validated 40-layer candidate. Remember a
-        // rejection only for this exact nonzero graph UID/catalog pair, so the
-        // ordinary fusion mask can still be reused without ever turning a
-        // rejected partial match into a ready plan.
+        // Publish only a completely validated candidate.
         context->moe_router_tail_plan = {};
         context->moe_router_tail_plan.graph_uid =
             cgraph ? cgraph->uid : 0;
@@ -12782,6 +12498,12 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
         if (ggml_backend_hrx_build_moe_router_tail_graph_plan(
                 context->device_context, cgraph, &candidate)) {
             context->moe_router_tail_plan = std::move(candidate);
+        } else if (ggml_backend_hrx_trace_enabled(
+                       context->device_context->reg_context)) {
+            ggml_backend_hrx_trace_event(
+                context->device_context->reg_context, {
+                    {"event", "moe_router_tail_plan_rejected"},
+                });
         }
     }
     if (context->moe_router_tail_plan.ready) {
@@ -12799,8 +12521,8 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                  ? context->device_context->reg_context->catalog.get()
                  : nullptr);
     if (!shared_expert_terminal_cache_hit) {
-        // Publish producer suppression only after every one of the forty
-        // layers resolves the exact fused route and alias contract.
+        // Publish producer suppression only after each admitted layer resolves
+        // the fused route and alias contract.
         context->shared_expert_terminal_plan = {};
         context->shared_expert_terminal_plan.graph_uid =
             cgraph ? cgraph->uid : 0;
@@ -12847,41 +12569,42 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
             if (context->device_context->current_gdn_qk_scale_plan &&
                 context->device_context->current_gdn_qk_scale_plan
                         ->skip_mask[static_cast<size_t>(i)] != 0) {
-                ggml_backend_hrx_trace_event(
-                    context->device_context->reg_context, {
-                        {"event", "fused_producer_skipped"},
-                        {"producer_op", ggml_op_desc(node)},
-                        {"consumer_op", "GATED_DELTA_NET"},
-                        {"route_id",
-                         "gated_delta_net_f32_sv128_qk_l2_full_head_wg256"},
-                    });
+                if (ggml_backend_hrx_trace_enabled(
+                        context->device_context->reg_context)) {
+                    ggml_backend_hrx_trace_event(
+                        context->device_context->reg_context, {
+                            {"event", "fused_producer_skipped"},
+                            {"producer_op", ggml_op_desc(node)},
+                            {"consumer_op", "GATED_DELTA_NET"},
+                        });
+                }
                 continue;
             }
             if (context->device_context->current_recurrent_cache_plan) {
                 if (context->device_context->current_recurrent_cache_plan
                             ->skip_mask[static_cast<size_t>(i)] != 0) {
-                    bool ssm_materialization = false;
-                    for (const auto & layer :
-                         context->device_context
-                             ->current_recurrent_cache_plan->layers) {
-                        if (i == layer.cache_r_get_index ||
-                            i == layer.concat_index ||
-                            i == layer.cache_r_write_index ||
-                            i == layer.silu_index) {
-                            ssm_materialization = true;
-                            break;
+                    if (ggml_backend_hrx_trace_enabled(
+                            context->device_context->reg_context)) {
+                        bool ssm_materialization = false;
+                        for (const auto & layer :
+                             context->device_context
+                                 ->current_recurrent_cache_plan->layers) {
+                            if (i == layer.cache_r_get_index ||
+                                i == layer.concat_index ||
+                                i == layer.cache_r_write_index ||
+                                i == layer.silu_index) {
+                                ssm_materialization = true;
+                                break;
+                            }
                         }
+                        ggml_backend_hrx_trace_event(
+                            context->device_context->reg_context, {
+                                {"event", "fused_producer_skipped"},
+                                {"producer_op", ggml_op_desc(node)},
+                                {"consumer_op", ssm_materialization
+                                     ? "SSM_CONV" : "GATED_DELTA_NET"},
+                            });
                     }
-                    ggml_backend_hrx_trace_event(
-                        context->device_context->reg_context, {
-                            {"event", "fused_producer_skipped"},
-                            {"producer_op", ggml_op_desc(node)},
-                            {"consumer_op", ssm_materialization
-                                 ? "SSM_CONV" : "GATED_DELTA_NET"},
-                            {"route_id", ssm_materialization
-                                 ? "ssm_conv_f32_state_cache_decode_wg256"
-                                 : "gated_delta_net_f32_state_cache_decode_wg64"},
-                        });
                     continue;
                 }
             }
@@ -12890,10 +12613,20 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
                     ->add_skip_mask[static_cast<size_t>(i)] != 0) {
                 continue;
             }
-            const bool fused_producer = fusion_cache_hit ?
-                context->fusion_producer_mask[static_cast<size_t>(i)] != 0 :
-                ggml_backend_hrx_is_fused_producer_node(
+            const bool producer_already_classified =
+                context->fusion_producer_mask[
+                    static_cast<size_t>(i)] != 0;
+            if (!fusion_cache_hit && producer_already_classified &&
+                ggml_backend_hrx_trace_enabled(
+                    context->device_context->reg_context)) {
+                (void) ggml_backend_hrx_is_fused_producer_node(
                     context->device_context, cgraph, i, context);
+            }
+            const bool fused_producer =
+                producer_already_classified ||
+                (!fusion_cache_hit &&
+                 ggml_backend_hrx_is_fused_producer_node(
+                     context->device_context, cgraph, i, context));
             if (!fusion_cache_hit) {
                 context->fusion_producer_mask[static_cast<size_t>(i)] =
                     fused_producer ? 1 : 0;

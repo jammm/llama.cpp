@@ -8,7 +8,7 @@
 // Physical storage contract for the capacity-neutral Q5_K down-expert layout.
 //
 // GGML keeps the logical tensor shape and byte count unchanged. Only tensors
-// matching the exact Qwen3.6 target name/type/shape contract are permuted from
+// matching the canonical expert-down name/type/shape contract are permuted from
 //
 //   [expert][row][block2][field11][byte16]
 //
@@ -81,17 +81,12 @@ inline bool has_exact_weight_name(const char * name) {
     if (*cursor < '0' || *cursor > '9') {
         return false;
     }
-    // The target has exactly forty layers. Reject alternate spellings such as
-    // blk.00 so the classifier remains a single canonical grammar.
+    // Reject alternate spellings such as blk.00 so the classifier remains a
+    // single canonical grammar.
     if (*cursor == '0' && cursor[1] >= '0' && cursor[1] <= '9') {
         return false;
     }
-    unsigned layer = 0;
     do {
-        layer = layer * 10u + static_cast<unsigned>(*cursor - '0');
-        if (layer >= 40u) {
-            return false;
-        }
         ++cursor;
     } while (*cursor >= '0' && *cursor <= '9');
     return std::strcmp(cursor, kSuffix) == 0;
