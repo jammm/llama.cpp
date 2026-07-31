@@ -1,18 +1,21 @@
 import json
+import re
 
 
 MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
 SINGLE_MATCH_V2_FIELDS = {"op", "attributes", "predicates"}
 FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates"}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
-TENSOR_FIELDS = {"type", "optional", "shape", "layout"}
+TENSOR_FIELDS = {"type", "optional", "shape", "layout", "storage"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
 PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "transients", "no_overlap"}
 DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
-BUFFER_FIELDS = {"name", "tensor", "position", "kind"}
+BUFFER_FIELDS = {"name", "tensor", "scratch", "position", "kind"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
 DISPATCH_FIELDS = {"work_items", "workgroups", "workgroup_size"}
 INVOCATION_FIELDS = {"buffers", "scalars", "dispatch"}
+SCRATCH_FIELDS = {"name", "minimum_capacity", "segments"}
+SCRATCH_SEGMENT_FIELDS = {"name", "length", "alignment"}
 
 SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
 INTEGER_TYPES = {"i32", "i64"}
@@ -43,6 +46,18 @@ OP_RULES = {
         "input_tensors": {"src0"},
         "attributes": {"minimum": "f32", "maximum": "f32"},
     },
+    "GGML_OP_CONCAT": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {"dim": "i32"},
+    },
+    "GGML_OP_CONT": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
+    },
     "GGML_OP_CPY": {
         "required_tensors": {"src0", "dst"},
         "optional_tensors": set(),
@@ -72,11 +87,23 @@ OP_RULES = {
         "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
+    "GGML_OP_GATED_DELTA_NET": {
+        "required_tensors": {"src0", "src1", "src2", "src3", "src4", "src5", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1", "src2", "src3", "src4", "src5"},
+        "attributes": {"K": "i32"},
+    },
     "GGML_OP_GLU": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1"},
         "attributes": {"glu_op": "i32"},
+    },
+    "GGML_OP_L2_NORM": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {"eps": "f32"},
     },
     "GGML_OP_MUL": {
         "required_tensors": {"src0", "src1", "dst"},
@@ -110,6 +137,10 @@ OP_RULES = {
             "mode": "i32",
             "n_ctx_orig": "i32",
             "n_dims": "i32",
+            "section0": "i32",
+            "section1": "i32",
+            "section2": "i32",
+            "section3": "i32",
         },
     },
     "GGML_OP_RMS_NORM": {
@@ -142,11 +173,23 @@ OP_RULES = {
         "input_tensors": {"src0"},
         "attributes": {},
     },
+    "GGML_OP_SSM_CONV": {
+        "required_tensors": {"src0", "src1", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0", "src1"},
+        "attributes": {},
+    },
     "GGML_OP_SUB": {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1"},
         "attributes": {},
+    },
+    "GGML_OP_UNARY": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {"unary_op": "i32"},
     },
 }
 
@@ -155,6 +198,8 @@ BUFFER_KIND_ACCESS = {
     "output": "write",
     "inout": "read_write",
 }
+
+IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def unknown_fields(data, allowed, source):
@@ -207,6 +252,12 @@ def require_bool(data, key, source):
     value = data.get(key)
     if type(value) is not bool:
         raise ValueError(f"{source}: expected boolean field {key}")
+    return value
+
+
+def validate_identifier(value, source):
+    if not isinstance(value, str) or IDENTIFIER_RE.fullmatch(value) is None:
+        raise ValueError(f"{source}: expected C identifier")
     return value
 
 
@@ -583,6 +634,8 @@ def validate_tensor_table(tensors, route_path, known_tensors=None, optional_tens
         tensor_type = require_string(tensor, "type", tensor_source)
         if tensor_type not in DTYPES:
             raise ValueError(f"{tensor_source}: unsupported tensor type {tensor_type}")
+        if "storage" in tensor:
+            require_string(tensor, "storage", tensor_source)
         if "optional" in tensor:
             require_bool(tensor, "optional", tensor_source)
             if known_tensors is not None and name not in optional_tensors:
@@ -899,15 +952,87 @@ def validate_comparator_value(value, field_type, context, source):
         validate_literal(value, field_type, source)
 
 
-def validate_invocation(route, route_path, definition, context):
+def validate_scratch(route, route_path, context):
+    values = route.get("scratch", [])
+    if not isinstance(values, list):
+        raise ValueError(f"{route_path}: scratch must be an array")
+    scratch = {}
+    for i, value in enumerate(values):
+        source = f"{route_path}: scratch[{i}]"
+        if not isinstance(value, dict):
+            raise ValueError(f"{source}: expected object")
+        unknown_fields(value, SCRATCH_FIELDS, source)
+        name = validate_identifier(value.get("name"), f"{source}.name")
+        if name in scratch:
+            raise ValueError(f"{source}: duplicate scratch name {name}")
+        minimum_capacity = require_int(value, "minimum_capacity", source)
+        if minimum_capacity < 0:
+            raise ValueError(f"{source}.minimum_capacity: expected non-negative integer")
+        segments = require_list(value, "segments", source)
+        segment_names = {}
+        validated_segments = []
+        for j, segment in enumerate(segments):
+            segment_source = f"{source}.segments[{j}]"
+            if not isinstance(segment, dict):
+                raise ValueError(f"{segment_source}: expected object")
+            unknown_fields(segment, SCRATCH_SEGMENT_FIELDS, segment_source)
+            segment_name = validate_identifier(segment.get("name"), f"{segment_source}.name")
+            if segment_name in segment_names:
+                raise ValueError(f"{segment_source}: duplicate scratch segment name {segment_name}")
+            length = segment.get("length")
+            validate_integer_operand(length, context, f"{segment_source}.length")
+            alignment = require_int(segment, "alignment", segment_source)
+            if alignment <= 0:
+                raise ValueError(f"{segment_source}.alignment: expected positive integer")
+            validated = {
+                "index": j,
+                "name": segment_name,
+                "length": length,
+                "alignment": alignment,
+            }
+            segment_names[segment_name] = validated
+            validated_segments.append(validated)
+        scratch[name] = {
+            "index": i,
+            "name": name,
+            "minimum_capacity": minimum_capacity,
+            "segments": validated_segments,
+            "segment_by_name": segment_names,
+        }
+    return scratch
+
+
+def resolve_scratch_reference(value, scratch, source):
+    if not isinstance(value, str):
+        raise ValueError(f"{source}: expected scratch reference class.segment")
+    parts = value.split(".")
+    if len(parts) != 2:
+        raise ValueError(f"{source}: expected scratch reference class.segment")
+    scratch_class = scratch.get(parts[0])
+    if scratch_class is None:
+        raise ValueError(f"{source}: unknown scratch class {parts[0]}")
+    segment = scratch_class["segment_by_name"].get(parts[1])
+    if segment is None:
+        raise ValueError(f"{source}: unknown scratch segment {value}")
+    return scratch_class, segment
+
+
+def validate_invocation(route, route_path, definition, context, scratch=None):
     invocation = require_dict(route, "invocation", route_path)
     unknown_fields(invocation, INVOCATION_FIELDS, f"{route_path}: invocation")
-    validate_buffers(require_array(invocation, "buffers", f"{route_path}: invocation"), route_path, definition, context)
+    validate_buffers(
+        require_array(invocation, "buffers", f"{route_path}: invocation"),
+        route_path,
+        definition,
+        context,
+        scratch or {},
+    )
     validate_scalars(require_array(invocation, "scalars", f"{route_path}: invocation"), route_path, definition, context)
     validate_dispatch(require_dict(invocation, "dispatch", f"{route_path}: invocation"), route_path, definition, context)
 
 
-def validate_buffers(buffers, route_path, definition, context):
+def validate_buffers(buffers, route_path, definition, context, scratch=None):
+    scratch = scratch or {}
     validate_positions(buffers, "invocation.buffers", route_path)
     bindings = require_array(definition, "bindings", route_path)
     binding_by_name = {binding["name"]: binding for binding in bindings}
@@ -924,8 +1049,19 @@ def validate_buffers(buffers, route_path, definition, context):
         if name in seen:
             raise ValueError(f"{source}: duplicate buffer name {name}")
         seen.add(name)
-        tensor = require_string(buffer, "tensor", source)
-        context.validate_tensor_role(tensor, f"{source}.tensor")
+        has_tensor = "tensor" in buffer
+        has_scratch = "scratch" in buffer
+        if has_tensor == has_scratch:
+            raise ValueError(f"{source}: expected exactly one of tensor or scratch")
+        if has_tensor:
+            tensor = require_string(buffer, "tensor", source)
+            context.validate_tensor_role(tensor, f"{source}.tensor")
+        else:
+            resolve_scratch_reference(
+                require_string(buffer, "scratch", source),
+                scratch,
+                f"{source}.scratch",
+            )
         kind = require_string(buffer, "kind", source)
         access = BUFFER_KIND_ACCESS.get(kind)
         if access is None:

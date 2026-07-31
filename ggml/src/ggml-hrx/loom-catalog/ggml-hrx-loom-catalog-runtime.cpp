@@ -4,10 +4,11 @@
 #include <loomc/loomc.h>
 #include <loomc/target/amdgpu.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -187,11 +188,71 @@ struct ggml_backend_hrx_loom_catalog {
     hrx_device_t                                                     device = nullptr;
     std::string                                                      architecture;
     std::string                                                      target;
-    std::mutex                                                       routes_mutex;
     std::vector<std::unique_ptr<ggml_backend_hrx_loaded_loom_route>> routes;
 
     ~ggml_backend_hrx_loom_catalog() {
         routes.clear();
+        if (device) {
+            hrx_device_release(device);
+        }
+    }
+};
+
+namespace {
+
+static constexpr size_t GGML_BACKEND_HRX_LOOM_SCRATCH_ALIGNMENT = 256;
+
+static size_t ggml_backend_hrx_loom_align_up(size_t value, size_t alignment) {
+    if (alignment == 0) {
+        return value;
+    }
+    const size_t remainder = value % alignment;
+    return remainder == 0 ? value : value + alignment - remainder;
+}
+
+struct ggml_backend_hrx_loom_scratch_state {
+    std::string               name;
+    hrx_buffer_t              buffer          = nullptr;
+    size_t                    capacity        = 0;
+    std::vector<hrx_buffer_t> retired_buffers;
+    const ggml_tensor *       cache_source    = nullptr;
+    const ggml_tensor *       cache_owner     = nullptr;
+    hrx_buffer_ref_t          cache_source_binding = {};
+    hrx_buffer_ref_t          cache_region         = {};
+    int                       cache_node_index = -1;
+    uint64_t                  cache_epoch     = 0;
+    std::string               cache_artifact;
+
+    void clear_cache() {
+        cache_source         = nullptr;
+        cache_owner          = nullptr;
+        cache_source_binding = {};
+        cache_region         = {};
+        cache_node_index     = -1;
+        cache_epoch          = 0;
+        cache_artifact.clear();
+    }
+
+    ~ggml_backend_hrx_loom_scratch_state() {
+        if (buffer) {
+            hrx_buffer_release(buffer);
+        }
+        for (hrx_buffer_t retired : retired_buffers) {
+            if (retired) {
+                hrx_buffer_release(retired);
+            }
+        }
+    }
+};
+
+}  // namespace
+
+struct ggml_backend_hrx_loom_invocation_context {
+    hrx_device_t                                                   device = nullptr;
+    std::vector<std::unique_ptr<ggml_backend_hrx_loom_scratch_state>> scratch;
+
+    ~ggml_backend_hrx_loom_invocation_context() {
+        scratch.clear();
         if (device) {
             hrx_device_release(device);
         }
@@ -218,8 +279,8 @@ const ggml_backend_hrx_loom_catalog_entry * ggml_backend_hrx_loom_find_entry(
 namespace {
 
 static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_route(
-    ggml_backend_hrx_loom_catalog *              catalog,
-    const ggml_backend_hrx_loom_execution_plan * plan) {
+    ggml_backend_hrx_loom_catalog *           catalog,
+    const ggml_backend_hrx_loom_kernel_plan * plan) {
     if (!catalog || !plan || !plan->entry) {
         return nullptr;
     }
@@ -228,10 +289,7 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
                        plan->config_binding_count);
         return nullptr;
     }
-
     const std::string cache_key = ggml_backend_hrx_loom_cache_key(catalog->target.c_str(), plan);
-
-    std::lock_guard<std::mutex> lock(catalog->routes_mutex);
     for (const auto & route : catalog->routes) {
         if (route->cache_key == cache_key) {
             return route.get();
@@ -297,9 +355,11 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
     return catalog->routes.back().get();
 }
 
-static bool ggml_backend_hrx_loom_dispatch_plan(ggml_backend_hrx_loom_catalog *              catalog,
-                                                hrx_stream_t                                 stream,
-                                                const ggml_backend_hrx_loom_execution_plan * plan) {
+static bool ggml_backend_hrx_loom_dispatch_kernel_plan_impl(
+    ggml_backend_hrx_loom_catalog *           catalog,
+    hrx_stream_t                              stream,
+    const ggml_backend_hrx_loom_kernel_plan * plan,
+    const hrx_buffer_ref_t *                  bindings_override = nullptr) {
     if (!plan || !plan->entry) {
         return false;
     }
@@ -316,8 +376,215 @@ static bool ggml_backend_hrx_loom_dispatch_plan(ggml_backend_hrx_loom_catalog * 
     }
 
     return GGML_HRX_LOOM_CHECK(hrx_stream_dispatch(stream, route->executable, route->export_ordinal, &plan->dispatch,
-                                                   plan->constants, plan->constants_size, plan->bindings,
+                                                   plan->constants, plan->constants_size,
+                                                   bindings_override ? bindings_override : plan->bindings,
                                                    plan->binding_count, HRX_DISPATCH_FLAG_NONE));
+}
+
+static ggml_backend_hrx_loom_scratch_state * ggml_backend_hrx_loom_find_scratch(
+    ggml_backend_hrx_loom_invocation_context * context,
+    const char *                               name) {
+    if (!context || !name) {
+        return nullptr;
+    }
+    for (const auto & state : context->scratch) {
+        if (state->name == name) {
+            return state.get();
+        }
+    }
+    auto state  = std::make_unique<ggml_backend_hrx_loom_scratch_state>();
+    state->name = name;
+    context->scratch.push_back(std::move(state));
+    return context->scratch.back().get();
+}
+
+static bool ggml_backend_hrx_loom_reserve_scratch(
+    ggml_backend_hrx_loom_invocation_context * context,
+    ggml_backend_hrx_loom_scratch_state *      state,
+    const ggml_backend_hrx_loom_scratch_plan & plan) {
+    if (!context || !context->device || !state || plan.bytes == 0) {
+        return false;
+    }
+    if (state->buffer && state->capacity >= plan.bytes) {
+        return true;
+    }
+
+    if (state->buffer) {
+        state->retired_buffers.push_back(state->buffer);
+        state->buffer   = nullptr;
+        state->capacity = 0;
+        state->clear_cache();
+    }
+
+    if (plan.bytes > SIZE_MAX / 2) {
+        return false;
+    }
+    const size_t requested = std::max(plan.bytes * 2, plan.minimum_capacity);
+    if (requested > SIZE_MAX - (GGML_BACKEND_HRX_LOOM_SCRATCH_ALIGNMENT - 1)) {
+        return false;
+    }
+    const size_t capacity =
+        ggml_backend_hrx_loom_align_up(requested, GGML_BACKEND_HRX_LOOM_SCRATCH_ALIGNMENT);
+    hrx_buffer_params_t params = {
+        /* .type           = */ HRX_MEMORY_TYPE_DEVICE_LOCAL,
+        /* .access         = */ HRX_MEMORY_ACCESS_ALL,
+        /* .usage          = */ HRX_BUFFER_USAGE_DEFAULT,
+        /* .queue_affinity = */ 0,
+    };
+    if (!GGML_HRX_LOOM_CHECK(
+            hrx_allocator_allocate_buffer(hrx_device_allocator(context->device), params, capacity, &state->buffer))) {
+        state->buffer = nullptr;
+        return false;
+    }
+    state->capacity = capacity;
+    return true;
+}
+
+static const ggml_tensor * ggml_backend_hrx_loom_scratch_owner(const ggml_tensor * tensor) {
+    const ggml_tensor * owner = tensor;
+    while (owner && owner->view_src && owner->op == GGML_OP_RESHAPE && owner->view_offs == 0 &&
+           owner->type == owner->view_src->type && ggml_is_contiguous(owner) && ggml_is_contiguous(owner->view_src) &&
+           ggml_nbytes(owner) == ggml_nbytes(owner->view_src)) {
+        owner = owner->view_src;
+    }
+    return owner;
+}
+
+static bool ggml_backend_hrx_loom_buffer_refs_overlap(const hrx_buffer_ref_t & lhs,
+                                                      const hrx_buffer_ref_t & rhs) {
+    return lhs.buffer == rhs.buffer && lhs.offset < rhs.offset + rhs.length && rhs.offset < lhs.offset + lhs.length;
+}
+
+static bool ggml_backend_hrx_loom_is_metadata_op(const ggml_tensor * node) {
+    if (!node) {
+        return true;
+    }
+    switch (node->op) {
+        case GGML_OP_NONE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool ggml_backend_hrx_loom_scratch_source_unchanged(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_backend_hrx_loom_scratch_state & state,
+    const hrx_buffer_ref_t &                    source_binding) {
+    if (!request || !request->cgraph || state.cache_node_index < 0 ||
+        request->node_index <= state.cache_node_index || request->node_index > request->cgraph->n_nodes) {
+        return false;
+    }
+    for (int i = state.cache_node_index + 1; i < request->node_index; ++i) {
+        const ggml_tensor * between = request->cgraph->nodes[i];
+        if (ggml_backend_hrx_loom_is_metadata_op(between)) {
+            continue;
+        }
+        hrx_buffer_ref_t destination = {};
+        if (!ggml_backend_hrx_loom_bind_tensor(request, between, &destination) ||
+            ggml_backend_hrx_loom_buffer_refs_overlap(source_binding, destination)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ggml_backend_hrx_loom_scratch_matches(
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_scratch_state *    state,
+    const ggml_backend_hrx_loom_prepass_plan & prepass,
+    const hrx_buffer_ref_t &                  region) {
+    if (!request || !state || !prepass.kernel.entry || !prepass.cache_source) {
+        return false;
+    }
+    const ggml_backend_hrx_loom_scratch_cache_key cached = {
+        /* .source_owner = */ state->cache_owner,
+        /* .source       = */ state->cache_source_binding,
+        /* .region       = */ state->cache_region,
+        /* .epoch        = */ state->cache_epoch,
+        /* .artifact     = */ state->cache_artifact.c_str(),
+    };
+    const ggml_backend_hrx_loom_scratch_cache_key candidate = {
+        /* .source_owner = */ ggml_backend_hrx_loom_scratch_owner(prepass.cache_source),
+        /* .source       = */ prepass.cache_source_binding,
+        /* .region       = */ region,
+        /* .epoch        = */ request->execution_epoch,
+        /* .artifact     = */ prepass.kernel.entry->id,
+    };
+    if (!ggml_backend_hrx_loom_scratch_cache_key_matches(cached, candidate)) {
+        return false;
+    }
+    if (state->cache_source == prepass.cache_source) {
+        return true;
+    }
+    if (!ggml_backend_hrx_loom_scratch_source_unchanged(request, *state, prepass.cache_source_binding)) {
+        return false;
+    }
+    state->cache_source     = prepass.cache_source;
+    state->cache_node_index = request->node_index;
+    return true;
+}
+
+static void ggml_backend_hrx_loom_set_scratch_source(
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_scratch_state *    state,
+    const ggml_backend_hrx_loom_prepass_plan & prepass,
+    const hrx_buffer_ref_t &                  region) {
+    state->cache_source         = prepass.cache_source;
+    state->cache_owner          = ggml_backend_hrx_loom_scratch_owner(prepass.cache_source);
+    state->cache_source_binding = prepass.cache_source_binding;
+    state->cache_region         = region;
+    state->cache_node_index     = request->node_index;
+    state->cache_epoch          = request->execution_epoch;
+    state->cache_artifact       = prepass.kernel.entry->id;
+}
+
+static bool ggml_backend_hrx_loom_patch_scratch_bindings(
+    const ggml_backend_hrx_loom_kernel_plan *                                 kernel,
+    const ggml_backend_hrx_loom_execution_plan *                              plan,
+    const std::array<ggml_backend_hrx_loom_scratch_state *,
+                     GGML_BACKEND_HRX_LOOM_MAX_SCRATCH> &                     states,
+    std::array<hrx_buffer_ref_t, GGML_BACKEND_HRX_LOOM_MAX_BINDINGS> *         resolved,
+    const hrx_buffer_ref_t **                                                  out_bindings) {
+    if (!kernel || !plan || !resolved || !out_bindings ||
+        kernel->binding_count > GGML_BACKEND_HRX_LOOM_MAX_BINDINGS) {
+        return false;
+    }
+    *out_bindings = kernel->bindings;
+    bool copied = false;
+    for (size_t i = 0; i < kernel->binding_count; ++i) {
+        const uint8_t encoded_index = kernel->binding_scratch_index[i];
+        if (encoded_index == 0) {
+            continue;
+        }
+        const size_t scratch_index = static_cast<size_t>(encoded_index - 1);
+        if (scratch_index >= plan->scratch_count || scratch_index >= states.size() || !states[scratch_index]) {
+            return false;
+        }
+        const size_t offset = kernel->binding_scratch_offset[i];
+        const size_t length = kernel->binding_scratch_length[i];
+        if (offset > plan->scratch[scratch_index].bytes || length > plan->scratch[scratch_index].bytes - offset) {
+            return false;
+        }
+        if (!copied) {
+            std::memcpy(
+                resolved->data(),
+                kernel->bindings,
+                kernel->binding_count * sizeof(kernel->bindings[0]));
+            *out_bindings = resolved->data();
+            copied = true;
+        }
+        (*resolved)[i] = {
+            /* .buffer = */ states[scratch_index]->buffer,
+            /* .offset = */ offset,
+            /* .length = */ length,
+        };
+    }
+    return true;
 }
 
 }  // namespace
@@ -326,6 +593,18 @@ bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * 
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref) {
     return request && request->bind_tensor && request->bind_tensor(request->bind_tensor_user_data, tensor, out_ref);
+}
+
+bool ggml_backend_hrx_loom_storage_layout_matches(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const char *                             expected) {
+    if (!request || !tensor || !expected || !request->storage_layout) {
+        return false;
+    }
+    const char * actual =
+        request->storage_layout(request->storage_layout_user_data, tensor);
+    return actual && std::strcmp(actual, expected) == 0;
 }
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(
@@ -589,8 +868,28 @@ void ggml_backend_hrx_loom_catalog_free(ggml_backend_hrx_loom_catalog * catalog)
     delete catalog;
 }
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend_hrx_loom_catalog * catalog,
-                                                                    const ggml_tensor *             op) {
+ggml_backend_hrx_loom_invocation_context * ggml_backend_hrx_loom_invocation_context_new(hrx_device_t device) {
+    if (!device) {
+        return nullptr;
+    }
+    auto * context = new (std::nothrow) ggml_backend_hrx_loom_invocation_context();
+    if (!context) {
+        return nullptr;
+    }
+    hrx_device_retain(device);
+    context->device = device;
+    return context;
+}
+
+void ggml_backend_hrx_loom_invocation_context_free(ggml_backend_hrx_loom_invocation_context * context) {
+    delete context;
+}
+
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(
+    ggml_backend_hrx_loom_catalog *         catalog,
+    const ggml_tensor *                     op,
+    ggml_backend_hrx_loom_storage_layout_fn storage_layout,
+    void *                                  storage_layout_user_data) {
     if (!catalog || !op) {
         return ggml_backend_hrx_loom_unsupported(GGML_BACKEND_HRX_LOOM_UNSUPPORTED_NO_ROUTE);
     }
@@ -602,8 +901,99 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend
         /* .stream                = */ nullptr,
         /* .bind_tensor           = */ nullptr,
         /* .bind_tensor_user_data = */ nullptr,
+        /* .storage_layout        = */ storage_layout,
+        /* .storage_layout_user_data = */ storage_layout_user_data,
+        /* .invocation_context    = */ nullptr,
+        /* .execution_epoch       = */ 0,
     };
     return ggml_backend_hrx_loom_match_request(catalog, &request);
+}
+
+static bool ggml_backend_hrx_loom_dispatch_execution_plan(
+    ggml_backend_hrx_loom_catalog *          catalog,
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_backend_hrx_loom_execution_plan * plan) {
+    if (!catalog || !request || !request->op || !request->stream || !plan ||
+        plan->scratch_count > GGML_BACKEND_HRX_LOOM_MAX_SCRATCH ||
+        plan->prepass_count > GGML_BACKEND_HRX_LOOM_MAX_PREPASSES ||
+        ((plan->scratch_count > 0 || plan->prepass_count > 0) &&
+         !request->invocation_context)) {
+        return false;
+    }
+
+    std::array<ggml_backend_hrx_loom_scratch_state *, GGML_BACKEND_HRX_LOOM_MAX_SCRATCH> scratch_states = {};
+    for (size_t i = 0; i < plan->scratch_count; ++i) {
+        auto * state = ggml_backend_hrx_loom_find_scratch(
+            request->invocation_context,
+            plan->scratch[i].name);
+        if (!state ||
+            !ggml_backend_hrx_loom_reserve_scratch(
+                request->invocation_context,
+                state,
+                plan->scratch[i])) {
+            return false;
+        }
+        scratch_states[i] = state;
+    }
+
+    for (size_t i = 0; i < plan->prepass_count; ++i) {
+        const auto & prepass = plan->prepasses[i];
+        std::array<hrx_buffer_ref_t, GGML_BACKEND_HRX_LOOM_MAX_BINDINGS> resolved;
+        const hrx_buffer_ref_t * bindings = nullptr;
+        if (!ggml_backend_hrx_loom_patch_scratch_bindings(
+                &prepass.kernel,
+                plan,
+                scratch_states,
+                &resolved,
+                &bindings)) {
+            return false;
+        }
+
+        bool already_done = false;
+        ggml_backend_hrx_loom_scratch_state * cache_state = nullptr;
+        hrx_buffer_ref_t cache_region = {};
+        if (prepass.cache_scratch_index != 0) {
+            const size_t cache_index = static_cast<size_t>(prepass.cache_scratch_index - 1);
+            if (cache_index >= plan->scratch_count || !scratch_states[cache_index] ||
+                !ggml_backend_hrx_loom_resolve_cache_region(
+                    plan->scratch[cache_index],
+                    prepass,
+                    scratch_states[cache_index]->buffer,
+                    &cache_region) ||
+                (prepass.cache_region_length != 0 &&
+                 !ggml_backend_hrx_loom_cache_region_is_bound(prepass))) {
+                return false;
+            }
+            cache_state = scratch_states[cache_index];
+            already_done =
+                ggml_backend_hrx_loom_scratch_matches(request, cache_state, prepass, cache_region);
+        }
+        if (already_done) {
+            continue;
+        }
+        if (!ggml_backend_hrx_loom_dispatch_kernel_plan_impl(
+                catalog, request->stream, &prepass.kernel, bindings) ||
+            !GGML_HRX_LOOM_CHECK(hrx_stream_execution_barrier(request->stream))) {
+            return false;
+        }
+        if (cache_state) {
+            ggml_backend_hrx_loom_set_scratch_source(request, cache_state, prepass, cache_region);
+        }
+    }
+
+    std::array<hrx_buffer_ref_t, GGML_BACKEND_HRX_LOOM_MAX_BINDINGS> resolved;
+    const hrx_buffer_ref_t * bindings = nullptr;
+    return ggml_backend_hrx_loom_patch_scratch_bindings(
+               &plan->main,
+               plan,
+               scratch_states,
+               &resolved,
+               &bindings) &&
+           ggml_backend_hrx_loom_dispatch_kernel_plan_impl(
+               catalog,
+               request->stream,
+               &plan->main,
+               bindings);
 }
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
@@ -622,7 +1012,10 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
     if (response.result != GGML_BACKEND_HRX_LOOM_INVOKED) {
         return response;
     }
-    if (!ggml_backend_hrx_loom_dispatch_plan(catalog, request->stream, &plan)) {
+    if (!ggml_backend_hrx_loom_dispatch_execution_plan(
+            catalog,
+            request,
+            &plan)) {
         return ggml_backend_hrx_loom_failed(response.route_id);
     }
     if (consumed_nodes) {

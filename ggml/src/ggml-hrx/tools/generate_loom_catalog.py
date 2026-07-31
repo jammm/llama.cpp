@@ -44,11 +44,36 @@ struct ggml_backend_hrx_loom_catalog_entry {
     uint32_t constant_byte_length;
 };
 
+enum ggml_backend_hrx_loom_storage_transform_kind : uint8_t {
+    GGML_BACKEND_HRX_LOOM_STORAGE_ROW_GROUP_FIELD_INTERLEAVE,
+};
+
+struct ggml_backend_hrx_loom_storage_transform_entry {
+    const char * id;
+    const char * target;
+    const char * type;
+    int64_t shape[4];
+    bool contiguous;
+    const char * name_prefix;
+    const char * name_suffix;
+    bool decimal_middle;
+    ggml_backend_hrx_loom_storage_transform_kind kind;
+    size_t outer_count;
+    size_t row_count;
+    size_t block_count;
+    size_t field_count;
+    size_t unit_bytes;
+    size_t row_group;
+    const uint16_t * field_order;
+};
+
 const ggml_backend_hrx_loom_catalog_entry * ggml_backend_hrx_loom_catalog_entries(size_t * count);
+const ggml_backend_hrx_loom_storage_transform_entry *
+ggml_backend_hrx_loom_storage_transform_entries(size_t * count);
 """, encoding="utf-8")
 
 
-def write_generated_source(path, header_path, entries):
+def write_generated_source(path, header_path, entries, storage_transforms):
     path.parent.mkdir(parents=True, exist_ok=True)
     header_name = header_path.name
     chunks = [f"#include \"{header_name}\"\n\n"]
@@ -84,7 +109,110 @@ def write_generated_source(path, header_path, entries):
     return GGML_HRX_LOOM_CATALOG;
 }
 """)
+    for index, entry in enumerate(storage_transforms):
+        order = ", ".join(str(value) for value in entry["field_order"])
+        chunks.append(
+            f"\nstatic const uint16_t GGML_HRX_LOOM_STORAGE_FIELD_ORDER_{index}[] = "
+            f"{{{order}}};\n"
+        )
+    if storage_transforms:
+        chunks.append(
+            "\nstatic const ggml_backend_hrx_loom_storage_transform_entry "
+            "GGML_HRX_LOOM_STORAGE_TRANSFORMS[] = {\n"
+        )
+        for index, entry in enumerate(storage_transforms):
+            shape = ", ".join(str(value) for value in entry["shape"])
+            chunks.append(
+                "    {\n"
+                f"        /* .id = */ {c_string(entry['id'])},\n"
+                f"        /* .target = */ {c_string(entry['target'])},\n"
+                f"        /* .type = */ {c_string(entry['type'])},\n"
+                f"        /* .shape = */ {{{shape}}},\n"
+                f"        /* .contiguous = */ {'true' if entry['contiguous'] else 'false'},\n"
+                f"        /* .name_prefix = */ {c_string(entry['name_prefix'])},\n"
+                f"        /* .name_suffix = */ {c_string(entry['name_suffix'])},\n"
+                f"        /* .decimal_middle = */ {'true' if entry['decimal_middle'] else 'false'},\n"
+                "        /* .kind = */ GGML_BACKEND_HRX_LOOM_STORAGE_ROW_GROUP_FIELD_INTERLEAVE,\n"
+                f"        /* .outer_count = */ {entry['outer_count']},\n"
+                f"        /* .row_count = */ {entry['row_count']},\n"
+                f"        /* .block_count = */ {entry['block_count']},\n"
+                f"        /* .field_count = */ {entry['field_count']},\n"
+                f"        /* .unit_bytes = */ {entry['unit_bytes']},\n"
+                f"        /* .row_group = */ {entry['row_group']},\n"
+                f"        /* .field_order = */ GGML_HRX_LOOM_STORAGE_FIELD_ORDER_{index},\n"
+                "    },\n"
+            )
+        chunks.append("};\n\n")
+        storage_count = (
+            "sizeof(GGML_HRX_LOOM_STORAGE_TRANSFORMS) / "
+            "sizeof(GGML_HRX_LOOM_STORAGE_TRANSFORMS[0])"
+        )
+        storage_pointer = "GGML_HRX_LOOM_STORAGE_TRANSFORMS"
+    else:
+        storage_count = "0"
+        storage_pointer = "nullptr"
+    chunks.append("""const ggml_backend_hrx_loom_storage_transform_entry *
+ggml_backend_hrx_loom_storage_transform_entries(size_t * count) {
+    if (count) {
+        *count = %s;
+    }
+    return %s;
+}
+""" % (storage_count, storage_pointer))
     path.write_text("".join(chunks), encoding="utf-8")
+
+
+def make_entry(entry_id, target, definition_path, definition, source_root):
+    source_name = require_string(definition, "source", definition_path)
+    source_path = (source_root / source_name).resolve()
+    if not source_path.is_file():
+        raise ValueError(f"{definition_path}: missing source {source_path}")
+    source_format = require_string(definition, "source_format", definition_path)
+    if source_format not in loom.SOURCE_FORMATS:
+        supported = ", ".join(sorted(loom.SOURCE_FORMATS))
+        raise ValueError(
+            f"{definition_path}: unsupported source_format {source_format}; "
+            f"expected one of {supported}")
+    workgroup_size = require_list(definition, "workgroup_size", definition_path)
+    if len(workgroup_size) != 3:
+        raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
+    abi = definition.get("abi")
+    if not isinstance(abi, dict):
+        raise ValueError(f"{definition_path}: expected object field abi")
+
+    definition_id = require_string(definition, "id", definition_path)
+    return {
+        "id": entry_id,
+        "op": require_string(definition, "op", definition_path),
+        "target": target,
+        "source_name": source_name,
+        "source_data": source_path.read_bytes(),
+        "source_format": source_format,
+        "symbol": require_string(definition, "symbol", definition_path),
+        "array_name": (
+            f"ggml_hrx_loom_{c_identifier(definition_id)}_"
+            f"{c_identifier(entry_id)}_{c_identifier(target)}"
+        ),
+        "workgroup_size": [int(value) for value in workgroup_size],
+        "binding_count": require_int(abi, "binding_count", definition_path),
+        "parameter_count": require_int(abi, "parameter_count", definition_path),
+        "constant_byte_length": require_int(abi, "constant_byte_length", definition_path),
+        "definition_path": definition_path,
+    }
+
+
+def append_deduplicated_entry(entries, entries_by_key, entry):
+    key = (entry["id"], entry["target"])
+    existing = entries_by_key.get(key)
+    if existing is not None:
+        if existing["definition_path"] != entry["definition_path"]:
+            raise ValueError(
+                f"catalog entry {entry['id']} for target {entry['target']} "
+                f"uses conflicting definitions {existing['definition_path']} "
+                f"and {entry['definition_path']}")
+        return
+    entries_by_key[key] = entry
+    entries.append(entry)
 
 
 def build_entries(source_root, targets):
@@ -105,54 +233,60 @@ def build_entries(source_root, targets):
         selected_target_names[target] = True
     selected_target_entries = {target: 0 for target in selected_targets}
 
+    definitions = loom.load_definitions(source_root)
     entries = []
+    entries_by_key = {}
     for route_name in require_list(metadata, "routes", metadata_path):
         if not isinstance(route_name, str) or not route_name:
             raise ValueError(f"{metadata_path}: routes must contain non-empty strings")
         route_path = source_root / route_name
         route = read_json(route_path)
-        definition_path = (route_path.parent / require_string(route, "definition", route_path)).resolve()
-        definition = read_json(definition_path)
-        source_name = require_string(definition, "source", definition_path)
-        source_path = (source_root / source_name).resolve()
-        if not source_path.is_file():
-            raise ValueError(f"{definition_path}: missing source {source_path}")
-        source_format = require_string(definition, "source_format", definition_path)
-        if source_format not in loom.SOURCE_FORMATS:
-            supported = ", ".join(sorted(loom.SOURCE_FORMATS))
-            raise ValueError(f"{definition_path}: unsupported source_format {source_format}; expected one of {supported}")
-        workgroup_size = require_list(definition, "workgroup_size", definition_path)
-        if len(workgroup_size) != 3:
-            raise ValueError(f"{definition_path}: workgroup_size must have 3 values")
-        abi = definition.get("abi")
-        if not isinstance(abi, dict):
-            raise ValueError(f"{definition_path}: expected object field abi")
-
+        definition_path = (
+            route_path.parent /
+            require_string(route, "definition", route_path)
+        ).resolve()
+        definition = definitions.get(definition_path)
+        if definition is None:
+            raise ValueError(f"{route_path}: missing definition {definition_path}")
         route_id = require_string(route, "id", route_path)
-        definition_id = require_string(definition, "id", definition_path)
-        source_data = source_path.read_bytes()
+        prepass_definitions = []
+        for i, prepass in enumerate(route.get("prepasses", [])):
+            source = f"{route_path}: prepasses[{i}]"
+            prepass_path = (
+                route_path.parent /
+                require_string(prepass, "definition", source)
+            ).resolve()
+            prepass_definition = definitions.get(prepass_path)
+            if prepass_definition is None:
+                raise ValueError(f"{source}: missing definition {prepass_path}")
+            prepass_definitions.append((
+                require_string(prepass, "id", source),
+                prepass_path,
+                prepass_definition,
+            ))
+
         route_architectures = set(require_list(route, "architectures", route_path))
         for target in selected_targets:
             if loom.ARCHITECTURE_ANY not in route_architectures and target not in route_architectures:
                 continue
             selected_target_entries[target] += 1
-            entries.append({
-                "id": route_id,
-                "op": require_string(definition, "op", definition_path),
-                "target": target,
-                "source_name": source_name,
-                "source_data": source_data,
-                "source_format": source_format,
-                "symbol": require_string(definition, "symbol", definition_path),
-                "array_name": (
-                    f"ggml_hrx_loom_{c_identifier(definition_id)}_"
-                    f"{c_identifier(route_id)}_{c_identifier(target)}"
-                ),
-                "workgroup_size": [int(value) for value in workgroup_size],
-                "binding_count": require_int(abi, "binding_count", definition_path),
-                "parameter_count": require_int(abi, "parameter_count", definition_path),
-                "constant_byte_length": require_int(abi, "constant_byte_length", definition_path),
-            })
+            append_deduplicated_entry(
+                entries,
+                entries_by_key,
+                make_entry(route_id, target, definition_path, definition, source_root),
+            )
+            for prepass_id, prepass_path, prepass_definition in prepass_definitions:
+                append_deduplicated_entry(
+                    entries,
+                    entries_by_key,
+                    make_entry(
+                        prepass_id,
+                        target,
+                        prepass_path,
+                        prepass_definition,
+                        source_root,
+                    ),
+                )
 
     if not entries:
         raise ValueError(f"{metadata_path}: no routes selected for targets {selected_targets}")
@@ -160,6 +294,89 @@ def build_entries(source_root, targets):
         if entry_count == 0:
             raise ValueError(f"{metadata_path}: no Loom routes support selected target {target}")
     return entries
+
+
+def require_positive_int(data, key, source):
+    value = require_int(data, key, source)
+    if value <= 0:
+        raise ValueError(f"{source}: {key} must be positive")
+    return value
+
+
+def build_storage_transforms(source_root, targets):
+    metadata_path = source_root / "metadata.json"
+    metadata = read_json(metadata_path)
+    selected_targets = targets or require_list(metadata, "targets", metadata_path)
+    result = []
+    ids = set()
+    for transform_name in metadata.get("storage_transforms", []):
+        if not isinstance(transform_name, str) or not transform_name:
+            raise ValueError(f"{metadata_path}: storage_transforms must contain non-empty strings")
+        path = (source_root / transform_name).resolve()
+        value = read_json(path)
+        if value.get("schema") != "ggml-hrx-loom-storage-transform-v1":
+            raise ValueError(f"{path}: unsupported storage transform schema")
+        transform_id = require_string(value, "id", path)
+        if transform_id in ids:
+            raise ValueError(f"{path}: duplicate storage transform id {transform_id}")
+        ids.add(transform_id)
+        architectures = set(require_list(value, "architectures", path))
+        match = value.get("match")
+        transform = value.get("transform")
+        if not isinstance(match, dict) or not isinstance(transform, dict):
+            raise ValueError(f"{path}: match and transform must be objects")
+        tensor_type = require_string(match, "type", path)
+        if tensor_type not in loom.route_schema.DTYPES:
+            raise ValueError(f"{path}: unsupported tensor type {tensor_type}")
+        shape = require_list(match, "shape", path)
+        if len(shape) != 4 or any(type(item) is not int or item <= 0 for item in shape):
+            raise ValueError(f"{path}: match.shape must contain four positive integers")
+        contiguous = match.get("contiguous")
+        if type(contiguous) is not bool:
+            raise ValueError(f"{path}: match.contiguous must be boolean")
+        name = match.get("name")
+        if not isinstance(name, dict):
+            raise ValueError(f"{path}: match.name must be an object")
+        name_prefix = require_string(name, "prefix", path)
+        name_suffix = require_string(name, "suffix", path)
+        middle = require_string(name, "middle", path)
+        if middle != "decimal":
+            raise ValueError(f"{path}: only decimal name middles are supported")
+        if require_string(transform, "kind", path) != "row_group_field_interleave":
+            raise ValueError(f"{path}: unsupported storage transform kind")
+        outer_count = require_positive_int(transform, "outer_count", path)
+        row_count = require_positive_int(transform, "row_count", path)
+        block_count = require_positive_int(transform, "block_count", path)
+        field_count = require_positive_int(transform, "field_count", path)
+        unit_bytes = require_positive_int(transform, "unit_bytes", path)
+        row_group = require_positive_int(transform, "row_group", path)
+        if row_count % row_group != 0:
+            raise ValueError(f"{path}: row_count must be divisible by row_group")
+        field_order = require_list(transform, "field_order", path)
+        if (len(field_order) != field_count or
+                sorted(field_order) != list(range(field_count))):
+            raise ValueError(f"{path}: field_order must be a permutation of all fields")
+        for target in selected_targets:
+            if loom.ARCHITECTURE_ANY not in architectures and target not in architectures:
+                continue
+            result.append({
+                "id": transform_id,
+                "target": target,
+                "type": tensor_type,
+                "shape": shape,
+                "contiguous": contiguous,
+                "name_prefix": name_prefix,
+                "name_suffix": name_suffix,
+                "decimal_middle": True,
+                "outer_count": outer_count,
+                "row_count": row_count,
+                "block_count": block_count,
+                "field_count": field_count,
+                "unit_bytes": unit_bytes,
+                "row_group": row_group,
+                "field_order": field_order,
+            })
+    return result
 
 
 def main():
@@ -173,9 +390,12 @@ def main():
     try:
         source_root = Path(args.source_root)
         loom.validate_catalog(source_root)
-        entries = build_entries(source_root, parse_targets(args.targets))
+        targets = parse_targets(args.targets)
+        entries = build_entries(source_root, targets)
+        storage_transforms = build_storage_transforms(source_root, targets)
         write_generated_header(Path(args.out_h))
-        write_generated_source(Path(args.out_cpp), Path(args.out_h), entries)
+        write_generated_source(
+            Path(args.out_cpp), Path(args.out_h), entries, storage_transforms)
     except (OSError, json.JSONDecodeError, ValueError) as err:
         print(f"ValueError: {err}", file=sys.stderr)
         return 1

@@ -3,11 +3,13 @@
 #include "hrx_runtime.h"
 
 #include <cstddef>
+#include <cstdint>
 
 struct ggml_tensor;
 struct ggml_cgraph;
 
 struct ggml_backend_hrx_loom_catalog;
+struct ggml_backend_hrx_loom_invocation_context;
 
 static constexpr int GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES = 8;
 
@@ -30,14 +32,21 @@ enum ggml_backend_hrx_loom_unsupported_reason {
 typedef bool (*ggml_backend_hrx_loom_bind_tensor_fn)(void *              user_data,
                                                      const ggml_tensor * tensor,
                                                      hrx_buffer_ref_t *  out_ref);
+typedef const char * (*ggml_backend_hrx_loom_storage_layout_fn)(
+    void *              user_data,
+    const ggml_tensor * tensor);
 
 struct ggml_backend_hrx_loom_op_request {
-    const ggml_tensor *                  op;
-    const ggml_cgraph *                  cgraph;
-    int                                  node_index;
-    hrx_stream_t                         stream;
-    ggml_backend_hrx_loom_bind_tensor_fn bind_tensor;
-    void *                               bind_tensor_user_data;
+    const ggml_tensor *                       op;
+    const ggml_cgraph *                       cgraph;
+    int                                       node_index;
+    hrx_stream_t                              stream;
+    ggml_backend_hrx_loom_bind_tensor_fn      bind_tensor;
+    void *                                    bind_tensor_user_data;
+    ggml_backend_hrx_loom_storage_layout_fn   storage_layout;
+    void *                                    storage_layout_user_data;
+    ggml_backend_hrx_loom_invocation_context * invocation_context;
+    uint64_t                                  execution_epoch;
 };
 
 struct ggml_backend_hrx_loom_op_response {
@@ -55,8 +64,15 @@ ggml_backend_hrx_loom_catalog * ggml_backend_hrx_loom_catalog_new(hrx_device_t d
 
 void ggml_backend_hrx_loom_catalog_free(ggml_backend_hrx_loom_catalog * catalog);
 
-ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(ggml_backend_hrx_loom_catalog * catalog,
-                                                                    const ggml_tensor *             op);
+ggml_backend_hrx_loom_invocation_context * ggml_backend_hrx_loom_invocation_context_new(hrx_device_t device);
+
+void ggml_backend_hrx_loom_invocation_context_free(ggml_backend_hrx_loom_invocation_context * context);
+
+ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_supports_op(
+    ggml_backend_hrx_loom_catalog *        catalog,
+    const ggml_tensor *                    op,
+    ggml_backend_hrx_loom_storage_layout_fn storage_layout,
+    void *                                  storage_layout_user_data);
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
     ggml_backend_hrx_loom_catalog *          catalog,

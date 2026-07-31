@@ -14,6 +14,8 @@
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_BINDINGS        = 8;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE  = 256;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS = 64;
+static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_SCRATCH         = 4;
+static constexpr size_t GGML_BACKEND_HRX_LOOM_MAX_PREPASSES       = 4;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_CONFIG_NAME_BYTES   = 64;
 static constexpr size_t GGML_BACKEND_HRX_LOOM_CONFIG_VALUE_BYTES  = 128;
 
@@ -23,18 +25,111 @@ struct ggml_backend_hrx_loom_config_binding {
     const char * type;
 };
 
-struct ggml_backend_hrx_loom_execution_plan {
+struct ggml_backend_hrx_loom_kernel_plan {
     const ggml_backend_hrx_loom_catalog_entry * entry                                                      = nullptr;
     hrx_dispatch_config_t                       dispatch                                                   = {};
     hrx_buffer_ref_t                            bindings[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS]               = {};
+    uint8_t                                     binding_scratch_index[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS]  = {};
+    size_t                                      binding_scratch_offset[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS] = {};
+    size_t                                      binding_scratch_length[GGML_BACKEND_HRX_LOOM_MAX_BINDINGS] = {};
     size_t                                      binding_count                                              = 0;
     uint8_t                                     constants[GGML_BACKEND_HRX_LOOM_MAX_CONSTANTS_SIZE]        = {};
     size_t                                      constants_size                                             = 0;
     ggml_backend_hrx_loom_config_binding        config_bindings[GGML_BACKEND_HRX_LOOM_MAX_CONFIG_BINDINGS] = {};
     size_t                                      config_binding_count                                       = 0;
-    int                                         consumed_node_indices[GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES] = {};
-    int                                         consumed_node_count                                        = 0;
 };
+
+struct ggml_backend_hrx_loom_scratch_plan {
+    const char * name             = nullptr;
+    size_t       bytes            = 0;
+    size_t       minimum_capacity = 0;
+};
+
+struct ggml_backend_hrx_loom_prepass_plan {
+    ggml_backend_hrx_loom_kernel_plan kernel;
+    uint8_t                           cache_scratch_index = 0;
+    size_t                            cache_region_offset  = 0;
+    size_t                            cache_region_length  = 0;
+    const ggml_tensor *               cache_source         = nullptr;
+    hrx_buffer_ref_t                  cache_source_binding = {};
+};
+
+struct ggml_backend_hrx_loom_execution_plan {
+    ggml_backend_hrx_loom_kernel_plan  main;
+    ggml_backend_hrx_loom_scratch_plan scratch[GGML_BACKEND_HRX_LOOM_MAX_SCRATCH] = {};
+    size_t                             scratch_count = 0;
+    ggml_backend_hrx_loom_prepass_plan prepasses[GGML_BACKEND_HRX_LOOM_MAX_PREPASSES] = {};
+    size_t                             prepass_count = 0;
+    int                                consumed_node_indices[GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES] = {};
+    int                                consumed_node_count = 0;
+};
+
+struct ggml_backend_hrx_loom_scratch_cache_key {
+    const ggml_tensor * source_owner = nullptr;
+    hrx_buffer_ref_t    source       = {};
+    hrx_buffer_ref_t    region       = {};
+    uint64_t            epoch        = 0;
+    const char *        artifact     = nullptr;
+};
+
+static inline bool ggml_backend_hrx_loom_scratch_cache_key_matches(
+    const ggml_backend_hrx_loom_scratch_cache_key & lhs,
+    const ggml_backend_hrx_loom_scratch_cache_key & rhs) {
+    return lhs.source_owner == rhs.source_owner &&
+           lhs.source.buffer == rhs.source.buffer &&
+           lhs.source.offset == rhs.source.offset &&
+           lhs.source.length == rhs.source.length &&
+           lhs.region.buffer == rhs.region.buffer &&
+           lhs.region.offset == rhs.region.offset &&
+           lhs.region.length == rhs.region.length &&
+           lhs.epoch == rhs.epoch &&
+           lhs.artifact && rhs.artifact &&
+           std::strcmp(lhs.artifact, rhs.artifact) == 0;
+}
+
+static inline bool ggml_backend_hrx_loom_resolve_cache_region(
+    const ggml_backend_hrx_loom_scratch_plan & scratch,
+    const ggml_backend_hrx_loom_prepass_plan & prepass,
+    hrx_buffer_t                               buffer,
+    hrx_buffer_ref_t *                         region) {
+    if (!buffer || !region || scratch.bytes == 0 ||
+        (prepass.cache_region_length == 0 && prepass.cache_region_offset != 0)) {
+        return false;
+    }
+    const size_t offset = prepass.cache_region_length == 0 ? 0 : prepass.cache_region_offset;
+    const size_t length = prepass.cache_region_length == 0 ? scratch.bytes : prepass.cache_region_length;
+    if (offset > scratch.bytes || length == 0 || length > scratch.bytes - offset) {
+        return false;
+    }
+    *region = {
+        /* .buffer = */ buffer,
+        /* .offset = */ offset,
+        /* .length = */ length,
+    };
+    return true;
+}
+
+static inline bool ggml_backend_hrx_loom_cache_region_is_bound(
+    const ggml_backend_hrx_loom_prepass_plan & prepass) {
+    if (prepass.cache_scratch_index == 0 || prepass.cache_region_length == 0 ||
+        prepass.kernel.binding_count > GGML_BACKEND_HRX_LOOM_MAX_BINDINGS) {
+        return false;
+    }
+    for (size_t i = 0; i < prepass.kernel.binding_count; ++i) {
+        if (prepass.kernel.binding_scratch_index[i] != prepass.cache_scratch_index) {
+            continue;
+        }
+        const size_t binding_offset = prepass.kernel.binding_scratch_offset[i];
+        const size_t binding_length = prepass.kernel.binding_scratch_length[i];
+        if (binding_offset <= prepass.cache_region_offset &&
+            prepass.cache_region_offset - binding_offset <= binding_length &&
+            prepass.cache_region_length <=
+                binding_length - (prepass.cache_region_offset - binding_offset)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static inline bool ggml_backend_hrx_loom_match_only(const ggml_backend_hrx_loom_execution_plan * plan) {
     return plan == nullptr;
@@ -92,8 +187,8 @@ static inline void ggml_backend_hrx_loom_append_key_field(std::string & key, uin
     ggml_backend_hrx_loom_append_key_field(key, text.c_str(), text.size());
 }
 
-static inline std::string ggml_backend_hrx_loom_cache_key(const char *                                 target,
-                                                          const ggml_backend_hrx_loom_execution_plan * plan) {
+static inline std::string ggml_backend_hrx_loom_cache_key(const char *                              target,
+                                                          const ggml_backend_hrx_loom_kernel_plan * plan) {
     std::string                                 key;
     const ggml_backend_hrx_loom_catalog_entry * entry = plan ? plan->entry : nullptr;
     if (!entry) {
@@ -135,6 +230,11 @@ int64_t ggml_backend_hrx_loom_next_power_of_2(int64_t value);
 bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * request,
                                        const ggml_tensor *                      tensor,
                                        hrx_buffer_ref_t *                       out_ref);
+
+bool ggml_backend_hrx_loom_storage_layout_matches(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const char *                             expected);
 
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_match_request(ggml_backend_hrx_loom_catalog *          catalog,
                                                                       const ggml_backend_hrx_loom_op_request * request);
