@@ -60,7 +60,7 @@ MAX_CONFIG_VALUE_BYTES = 127
 MAX_SCRATCH = 4
 MAX_PREPASSES = 4
 
-CONFIG_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CONFIG_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
 
 def default_source_root():
@@ -161,7 +161,7 @@ def validate_config(route, route_path, context):
 
         name = route_schema.require_string(binding, "name", source)
         if CONFIG_NAME_RE.fullmatch(name) is None:
-            raise ValueError(f"{source}: name must match [A-Za-z_][A-Za-z0-9_]*")
+            raise ValueError(f"{source}: name must match [A-Za-z_][A-Za-z0-9_.]*")
         if len(name.encode("utf-8")) > MAX_CONFIG_NAME_BYTES:
             raise ValueError(f"{source}: name must fit in 63 bytes")
         if name in names:
@@ -243,6 +243,8 @@ def validate_prepasses(route, route_path, definitions, context, scratch):
         validate_config(prepass, source, context)
         route_schema.validate_invocation(prepass, source, definition, context, scratch)
 
+        if "cache" not in prepass:
+            continue
         cache = route_schema.require_dict(prepass, "cache", source)
         route_schema.unknown_fields(cache, CACHE_FIELDS, f"{source}: cache")
         cache_scratch = route_schema.require_string(cache, "scratch", f"{source}: cache")

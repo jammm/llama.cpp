@@ -3,7 +3,7 @@
   "id": "mul_mat_f32_f32_tiled",
   "definition": "../../../../defs/gfx1151/mul_mat/f32_f32/mul_mat_f32_f32_tiled.json",
   "format": "loom",
-  "priority": 100,
+  "priority": 300,
   "match": {
     "op": "GGML_OP_MUL_MAT",
     "tensors": {

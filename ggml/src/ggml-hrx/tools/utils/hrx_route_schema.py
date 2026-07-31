@@ -4,12 +4,37 @@ import re
 
 MATCH_FIELDS = {"op", "tensors", "attributes", "predicates"}
 SINGLE_MATCH_V2_FIELDS = {"op", "attributes", "predicates"}
-FUSION_MATCH_FIELDS = {"anchors", "ops", "predicates"}
+FUSION_MATCH_FIELDS = {
+    "anchors",
+    "ops",
+    "predicates",
+    "traversal",
+    "consumed_ops",
+    "dispatch_owner",
+}
 FUSION_OP_FIELDS = {"op", "tensors", "attributes"}
 TENSOR_FIELDS = {"type", "optional", "shape", "layout", "storage"}
 ATTRIBUTE_FIELDS = {"type", "source", "default"}
-PREDICATE_FIELDS = {"contiguous", "same_shape", "same_layout", "rank", "field", "equals", "in", "min", "max", "multiple_of", "divisible_by", "src_absent", "src_present", "transients", "no_overlap"}
-DERIVED_FIELDS = {"type", "field", "value", "product", "ceil_div", "next_power_of_2"}
+PREDICATE_FIELDS = {
+    "contiguous",
+    "same_shape",
+    "same_layout",
+    "rank",
+    "field",
+    "equals",
+    "in",
+    "min",
+    "max",
+    "multiple_of",
+    "divisible_by",
+    "src_absent",
+    "src_present",
+    "transients",
+    "no_overlap",
+    "same_or_disjoint_storage",
+    "consumers_through_view",
+}
+DERIVED_FIELDS = {"type", "field", "value", "product", "sum", "ceil_div", "next_power_of_2"}
 BUFFER_FIELDS = {"name", "tensor", "scratch", "position", "kind"}
 SCALAR_FIELDS = {"name", "source", "value", "type", "position"}
 DISPATCH_FIELDS = {"work_items", "workgroups", "workgroup_size"}
@@ -21,6 +46,8 @@ SCALAR_TYPES = {"i32", "i64", "f32", "f64"}
 INTEGER_TYPES = {"i32", "i64"}
 DTYPES = {"BF16", "F16", "F32", "I32", "I64", "Q4_K", "Q5_K", "Q6_K", "Q8_0"}
 SUPPORTED_BINDING_ACCESSES = {"read", "write", "read_write"}
+FUSION_TRAVERSALS = {"consecutive", "tensor_dag"}
+MAX_CONSUMED_NODES = 8
 SUPPORTED_SCALAR_TYPES = {
     "f32": (4, 4),
     "i32": (4, 4),
@@ -60,8 +87,8 @@ OP_RULES = {
     },
     "GGML_OP_CPY": {
         "required_tensors": {"src0", "dst"},
-        "optional_tensors": set(),
-        "input_tensors": {"src0"},
+        "optional_tensors": {"src1"},
+        "input_tensors": {"src0", "src1"},
         "attributes": {},
     },
     "GGML_OP_DIV": {
@@ -115,12 +142,18 @@ OP_RULES = {
         "required_tensors": {"src0", "src1", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1"},
-        "attributes": {},
+        "attributes": {"precision": "i32", "hint": "i32"},
     },
     "GGML_OP_MUL_MAT_ID": {
         "required_tensors": {"src0", "src1", "src2", "dst"},
         "optional_tensors": set(),
         "input_tensors": {"src0", "src1", "src2"},
+        "attributes": {},
+    },
+    "GGML_OP_RESHAPE": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
         "attributes": {},
     },
     "GGML_OP_ROPE": {
@@ -190,6 +223,12 @@ OP_RULES = {
         "optional_tensors": set(),
         "input_tensors": {"src0"},
         "attributes": {"unary_op": "i32"},
+    },
+    "GGML_OP_VIEW": {
+        "required_tensors": {"src0", "dst"},
+        "optional_tensors": set(),
+        "input_tensors": {"src0"},
+        "attributes": {},
     },
 }
 
@@ -282,6 +321,62 @@ def route_is_v2(route, route_path):
 
 def route_is_fusion_v2(route, route_path):
     return route_schema(route, route_path) == "ggml-hrx-loom-fusion-route-v2"
+
+
+def fusion_traversal(match, source):
+    traversal = match.get("traversal", "consecutive")
+    if not isinstance(traversal, str) or traversal not in FUSION_TRAVERSALS:
+        supported = ", ".join(sorted(FUSION_TRAVERSALS))
+        raise ValueError(
+            f"{source}.traversal: expected one of {supported}"
+        )
+    return traversal
+
+
+def fusion_consumed_ops(match, ops, source):
+    consumed_ops = match.get("consumed_ops")
+    if consumed_ops is None:
+        return list(ops)
+    if not isinstance(consumed_ops, list) or not consumed_ops:
+        raise ValueError(f"{source}.consumed_ops: expected non-empty operation array")
+
+    result = []
+    seen = set()
+    for i, op_name in enumerate(consumed_ops):
+        item_source = f"{source}.consumed_ops[{i}]"
+        if not isinstance(op_name, str) or not op_name:
+            raise ValueError(f"{item_source}: expected non-empty operation name")
+        if op_name not in ops:
+            raise ValueError(f"{item_source}: operation {op_name} is not declared in match.ops")
+        if op_name in seen:
+            raise ValueError(f"{item_source}: duplicate consumed operation {op_name}")
+        seen.add(op_name)
+        result.append(op_name)
+    if len(result) > MAX_CONSUMED_NODES:
+        raise ValueError(
+            f"{source}.consumed_ops: at most {MAX_CONSUMED_NODES} operations may be consumed"
+        )
+    return result
+
+
+def fusion_dispatch_owner(match, ops, consumed_ops, source):
+    owner = match.get("dispatch_owner")
+    if owner is None:
+        return None
+    if not isinstance(owner, str) or not owner:
+        raise ValueError(
+            f"{source}.dispatch_owner: expected non-empty operation name"
+        )
+    if owner not in ops:
+        raise ValueError(
+            f"{source}.dispatch_owner: operation {owner} is not declared "
+            "in match.ops"
+        )
+    if owner not in consumed_ops:
+        raise ValueError(
+            f"{source}.dispatch_owner: operation {owner} must be consumed"
+        )
+    return owner
 
 
 def route_tensors(route, route_path):
@@ -460,9 +555,7 @@ class RouteContext:
         field = parts[2]
         if field == "type" and len(parts) == 3:
             return "dtype"
-        if field == "rank" and len(parts) == 3:
-            return "i64"
-        if field == "element_count" and len(parts) == 3:
+        if field in {"rank", "element_count", "view_offset"} and len(parts) == 3:
             return "i64"
         if field in {"dimensions", "strides", "element_strides", "permutation"}:
             if len(parts) == 3:
@@ -509,6 +602,8 @@ class FusionRouteContext:
         self.tensors = tensors
         self.attributes = attributes
         self.derived = derived
+        self.transient_node_indices = None
+        self.transient_node_count = None
         self.shape_captures = {}
         for name, tensor in tensors.items():
             self.shape_captures[name] = tensor.get("shape", [])
@@ -543,9 +638,7 @@ class FusionRouteContext:
         field = parts[2]
         if field == "type" and len(parts) == 3:
             return "dtype"
-        if field == "rank" and len(parts) == 3:
-            return "i64"
-        if field == "element_count" and len(parts) == 3:
+        if field in {"rank", "element_count", "view_offset"} and len(parts) == 3:
             return "i64"
         if field in {"dimensions", "strides", "element_strides", "permutation"}:
             if len(parts) == 3:
@@ -691,6 +784,7 @@ def validate_fusion_match(route, route_path, definition):
 
     match = require_dict(route, "match", route_path)
     unknown_fields(match, FUSION_MATCH_FIELDS, f"{route_path}: match")
+    traversal = fusion_traversal(match, f"{route_path}: match")
     ops = require_non_empty_dict(match, "ops", f"{route_path}: match")
     if len(ops) < 2:
         raise ValueError(f"{route_path}: match.ops expects at least two operations")
@@ -700,17 +794,21 @@ def validate_fusion_match(route, route_path, definition):
         raise ValueError(f"{route_path}: match.anchors must be an array")
     if not anchors:
         anchors = [next(iter(ops))]
+    seen_anchors = set()
     for i, anchor in enumerate(anchors):
         if not isinstance(anchor, str) or not anchor:
             raise ValueError(f"{route_path}: match.anchors[{i}] expected non-empty string")
         if anchor not in ops:
             raise ValueError(f"{route_path}: match anchor {anchor} is not declared in match.ops")
+        if anchor in seen_anchors:
+            raise ValueError(f"{route_path}: duplicate match anchor {anchor}")
+        seen_anchors.add(anchor)
     if anchors[0] != next(iter(ops)):
         raise ValueError(f"{route_path}: first match.ops entry must be the first anchor")
 
     attributes = {}
-    produced_tensors = set()
     consumed_tensors = set()
+    op_tensor_names = {}
     for op_name, op_match in ops.items():
         op_source = f"{route_path}: match.ops.{op_name}"
         if not isinstance(op_name, str) or not op_name:
@@ -736,13 +834,43 @@ def validate_fusion_match(route, route_path, definition):
                 raise ValueError(f"{tensor_source}: expected non-empty tensor name")
             if tensor_name not in tensors:
                 raise ValueError(f"{tensor_source}: tensor {tensor_name} is not declared in tensors")
-            if role == "dst":
-                produced_tensors.add(tensor_name)
-            else:
+            if role != "dst":
                 consumed_tensors.add(tensor_name)
+        op_tensor_names[op_name] = set(op_tensors.values())
 
         op_attributes = validate_attributes(op_match, f"{route_path}: match.ops.{op_name}", op_rule)
         attributes[op_name] = op_attributes
+
+    consumed_ops = fusion_consumed_ops(match, ops, f"{route_path}: match")
+    if anchors[0] not in consumed_ops:
+        raise ValueError(
+            f"{route_path}: match.consumed_ops must include first anchor {anchors[0]}"
+        )
+    fusion_dispatch_owner(
+        match,
+        ops,
+        consumed_ops,
+        f"{route_path}: match",
+    )
+
+    if traversal == "tensor_dag":
+        reachable_tensors = set(op_tensor_names[anchors[0]])
+        unresolved = list(ops)[1:]
+        while unresolved:
+            connected = [
+                op_name
+                for op_name in unresolved
+                if reachable_tensors & op_tensor_names[op_name]
+            ]
+            if not connected:
+                op_name = unresolved[0]
+                raise ValueError(
+                    f"{route_path}: match.ops.{op_name} is not connected to the "
+                    f"tensor_dag rooted at anchor {anchors[0]}"
+                )
+            for op_name in connected:
+                reachable_tensors.update(op_tensor_names[op_name])
+                unresolved.remove(op_name)
 
     definition_op = require_string(definition, "op", route_path)
     anchor_op = require_string(ops[anchors[0]], "op", f"{route_path}: match.ops.{anchors[0]}")
@@ -763,8 +891,6 @@ def validate_fusion_match(route, route_path, definition):
             for j, tensor_name in enumerate(values):
                 if tensor_name not in tensors:
                     raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not declared in tensors")
-                if tensor_name not in produced_tensors:
-                    raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not produced inside the fusion")
                 if tensor_name not in consumed_tensors:
                     raise ValueError(f"{source}.transients[{j}]: tensor {tensor_name} is not consumed inside the fusion")
 
@@ -784,7 +910,7 @@ def validate_derived(route, route_path, context):
         item_type = require_string(item, "type", item_source)
         if item_type not in SCALAR_TYPES:
             raise ValueError(f"{item_source}: unsupported derived type {item_type}")
-        ops = [key for key in ("field", "value", "product", "ceil_div", "next_power_of_2") if key in item]
+        ops = [key for key in ("field", "value", "product", "sum", "ceil_div", "next_power_of_2") if key in item]
         if len(ops) != 1:
             raise ValueError(f"{item_source}: expected exactly one derived operation")
         op = ops[0]
@@ -794,6 +920,8 @@ def validate_derived(route, route_path, context):
             validate_literal(item["value"], item_type, f"{item_source}.value")
         elif op == "product":
             validate_product(item["product"], item_type, context, available, f"{item_source}.product")
+        elif op == "sum":
+            validate_sum(item["sum"], item_type, context, available, f"{item_source}.sum")
         elif op == "ceil_div":
             validate_ceil_div(item["ceil_div"], item_type, context, available, f"{item_source}.ceil_div")
         elif op == "next_power_of_2":
@@ -820,6 +948,20 @@ def validate_product(value, item_type, context, available, source):
         operand_type = context.resolve_source(operand, f"{source}[{i}]", available)
         if operand_type not in INTEGER_TYPES and operand_type != "vector_i64":
             raise ValueError(f"{source}[{i}]: expected integer or integer vector source")
+
+
+def validate_sum(value, item_type, context, available, source):
+    if item_type not in INTEGER_TYPES:
+        raise ValueError(f"{source}: sum result must be an integer type")
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{source}: expected non-empty array")
+    for i, operand in enumerate(value):
+        if is_source_string(operand):
+            operand_type = context.resolve_source(operand, f"{source}[{i}]", available)
+            if operand_type not in INTEGER_TYPES:
+                raise ValueError(f"{source}[{i}]: expected integer source")
+        elif type(operand) is not int:
+            raise ValueError(f"{source}[{i}]: expected integer literal or source string")
 
 
 def validate_ceil_div(value, item_type, context, available, source):
@@ -857,6 +999,8 @@ def validate_predicates(predicates, route_path, context):
                 "src_present",
                 "transients",
                 "no_overlap",
+                "same_or_disjoint_storage",
+                "consumers_through_view",
             ) if key in keys
         ]
         if len(forms) != 1:
@@ -894,6 +1038,62 @@ def validate_predicates(predicates, route_path, context):
             validate_tensor_pair_predicate(predicate["no_overlap"], source, context, "no_overlap")
             if len(keys) != 1:
                 raise ValueError(f"{source}: no_overlap predicate does not accept extra fields")
+        elif form == "same_or_disjoint_storage":
+            validate_tensor_list_predicate(
+                predicate["same_or_disjoint_storage"],
+                source,
+                context,
+                "same_or_disjoint_storage",
+            )
+            if len(predicate["same_or_disjoint_storage"]) < 2:
+                raise ValueError(
+                    f"{source}.same_or_disjoint_storage: expected at least two tensors"
+                )
+            if len(keys) != 1:
+                raise ValueError(
+                    f"{source}: same_or_disjoint_storage predicate does not accept extra fields"
+                )
+        elif form == "consumers_through_view":
+            if not isinstance(context, FusionRouteContext):
+                raise ValueError(
+                    f"{source}: consumers_through_view is only supported for fusion routes"
+                )
+            value = predicate["consumers_through_view"]
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"{source}.consumers_through_view: expected object"
+                )
+            unknown_fields(
+                value,
+                {"owner", "view"},
+                f"{source}.consumers_through_view",
+            )
+            owner = require_string(
+                value,
+                "owner",
+                f"{source}.consumers_through_view",
+            )
+            view = require_string(
+                value,
+                "view",
+                f"{source}.consumers_through_view",
+            )
+            context.validate_tensor_role(
+                owner,
+                f"{source}.consumers_through_view.owner",
+            )
+            context.validate_tensor_role(
+                view,
+                f"{source}.consumers_through_view.view",
+            )
+            if owner == view:
+                raise ValueError(
+                    f"{source}.consumers_through_view: owner and view must be distinct"
+                )
+            if len(keys) != 1:
+                raise ValueError(
+                    f"{source}: consumers_through_view predicate does not accept extra fields"
+                )
 
 
 def validate_same_shape_predicate(value, source, context):

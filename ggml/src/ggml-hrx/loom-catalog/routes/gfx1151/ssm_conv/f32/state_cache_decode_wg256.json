@@ -1,0 +1,253 @@
+{
+  "schema": "ggml-hrx-loom-fusion-route-v2",
+  "id": "ssm_conv_f32_state_cache_decode_wg256",
+  "definition": "../../../../defs/gfx1151/ssm_conv/f32/state_cache_decode_wg256.json",
+  "format": "loom",
+  "priority": 900,
+  "tensors": {
+    "cache_base": {
+      "type": "F32"
+    },
+    "cache_read": {
+      "type": "F32",
+      "shape": ["d0", "d1", "d2", "d3"]
+    },
+    "cache_indices": {
+      "type": "I32",
+      "shape": [1, 1, 1, 1]
+    },
+    "state_materialized": {
+      "type": "F32",
+      "shape": ["d0", "d1", "d2", "d3"]
+    },
+    "state_input": {
+      "type": "F32",
+      "shape": ["channels", "state_rows", "sequences", "outer"]
+    },
+    "x": {
+      "type": "F32",
+      "shape": ["channels", "tokens", "sequences", "outer"]
+    },
+    "window": {
+      "type": "F32",
+      "shape": ["channels", "window_rows", "sequences", "outer"]
+    },
+    "state_tail": {
+      "type": "F32",
+      "shape": ["channels", "state_rows", "sequences", "outer"]
+    },
+    "cache_write_target": {
+      "type": "F32",
+      "shape": ["d0", "d1", "d2", "d3"]
+    },
+    "cache_write_dst": {
+      "type": "F32",
+      "shape": ["d0", "d1", "d2", "d3"]
+    },
+    "filter": {
+      "type": "F32",
+      "shape": ["taps", "channels", "plane", "outer"]
+    },
+    "ssm_dst": {
+      "type": "F32",
+      "shape": ["channels", "tokens", "sequences", "outer"]
+    },
+    "dst": {
+      "type": "F32",
+      "shape": ["channels", "tokens", "sequences", "outer"]
+    }
+  },
+  "match": {
+    "anchors": ["cache_get"],
+    "traversal": "tensor_dag",
+    "consumed_ops": [
+      "cache_get",
+      "concat",
+      "cache_write",
+      "ssm",
+      "silu"
+    ],
+    "dispatch_owner": "cache_write",
+    "ops": {
+      "cache_get": {
+        "op": "GGML_OP_GET_ROWS",
+        "tensors": {
+          "src0": "cache_read",
+          "src1": "cache_indices",
+          "dst": "state_materialized"
+        },
+        "attributes": {}
+      },
+      "cache_read_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "cache_base",
+          "dst": "cache_read"
+        },
+        "attributes": {}
+      },
+      "state_reshape": {
+        "op": "GGML_OP_RESHAPE",
+        "tensors": {
+          "src0": "state_materialized",
+          "dst": "state_input"
+        },
+        "attributes": {}
+      },
+      "concat": {
+        "op": "GGML_OP_CONCAT",
+        "tensors": {
+          "src0": "state_input",
+          "src1": "x",
+          "dst": "window"
+        },
+        "attributes": {
+          "dim": {"type": "i32", "source": "op_param.0"}
+        }
+      },
+      "state_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "window",
+          "dst": "state_tail"
+        },
+        "attributes": {}
+      },
+      "cache_write": {
+        "op": "GGML_OP_CPY",
+        "tensors": {
+          "src0": "state_tail",
+          "src1": "cache_write_target",
+          "dst": "cache_write_dst"
+        },
+        "attributes": {}
+      },
+      "cache_write_view": {
+        "op": "GGML_OP_VIEW",
+        "tensors": {
+          "src0": "cache_base",
+          "dst": "cache_write_target"
+        },
+        "attributes": {}
+      },
+      "ssm": {
+        "op": "GGML_OP_SSM_CONV",
+        "tensors": {
+          "src0": "window",
+          "src1": "filter",
+          "dst": "ssm_dst"
+        },
+        "attributes": {}
+      },
+      "silu": {
+        "op": "GGML_OP_UNARY",
+        "tensors": {
+          "src0": "ssm_dst",
+          "dst": "dst"
+        },
+        "attributes": {
+          "unary_op": {"type": "i32", "source": "op_param.0"}
+        }
+      }
+    },
+    "predicates": [
+      {"field": "attribute.concat.dim", "equals": 1},
+      {"field": "attribute.silu.unary_op", "equals": 10},
+      {"field": "tensor.cache_base.element_count", "equals": 24576},
+      {"field": "tensor.cache_read.element_count", "equals": 24576},
+      {"field": "tensor.cache_indices.element_count", "equals": 1},
+      {"field": "tensor.state_materialized.element_count", "equals": 24576},
+      {"field": "shape.state_input.state_rows", "equals": 3},
+      {"field": "shape.x.channels", "equals": 8192},
+      {"field": "shape.x.tokens", "equals": 1},
+      {"field": "shape.x.sequences", "equals": 1},
+      {"field": "shape.x.outer", "equals": 1},
+      {"field": "shape.window.channels", "equals": "shape.x.channels"},
+      {"field": "shape.window.window_rows", "equals": 4},
+      {"field": "shape.window.sequences", "equals": 1},
+      {"field": "shape.window.outer", "equals": 1},
+      {"field": "shape.state_tail.channels", "equals": "shape.x.channels"},
+      {"field": "shape.state_tail.state_rows", "equals": 3},
+      {"field": "shape.state_tail.sequences", "equals": 1},
+      {"field": "shape.state_tail.outer", "equals": 1},
+      {"field": "tensor.state_tail.view_offset", "equals": 32768},
+      {"field": "tensor.cache_write_target.element_count", "equals": 24576},
+      {"field": "tensor.cache_write_dst.element_count", "equals": 24576},
+      {"field": "tensor.cache_read.view_offset", "equals": "tensor.cache_write_target.view_offset"},
+      {"field": "tensor.cache_write_dst.view_offset", "equals": "tensor.cache_write_target.view_offset"},
+      {"field": "shape.filter.taps", "equals": 4},
+      {"field": "shape.filter.channels", "equals": "shape.x.channels"},
+      {"field": "shape.filter.plane", "equals": 1},
+      {"field": "shape.filter.outer", "equals": 1},
+      {"same_shape": ["ssm_dst", "dst"]},
+      {"field": "shape.dst.channels", "equals": "shape.x.channels"},
+      {"field": "shape.dst.tokens", "equals": 1},
+      {"field": "shape.dst.sequences", "equals": 1},
+      {"field": "shape.dst.outer", "equals": 1},
+      {"same_shape": ["cache_read", "state_materialized", "cache_write_target", "cache_write_dst"]},
+      {"same_layout": ["cache_read", "state_materialized", "cache_write_target", "cache_write_dst"]},
+      {"contiguous": "cache_base"},
+      {"contiguous": "cache_read"},
+      {"contiguous": "cache_indices"},
+      {"contiguous": "state_materialized"},
+      {"contiguous": "state_input"},
+      {"contiguous": "x"},
+      {"contiguous": "window"},
+      {"contiguous": "state_tail"},
+      {"contiguous": "cache_write_target"},
+      {"contiguous": "cache_write_dst"},
+      {"contiguous": "filter"},
+      {"contiguous": "ssm_dst"},
+      {"contiguous": "dst"},
+      {"transients": ["state_materialized", "state_input", "window", "state_tail", "ssm_dst"]},
+      {"same_or_disjoint_storage": ["x", "dst"]},
+      {"no_overlap": ["cache_read", "state_materialized"]},
+      {"no_overlap": ["cache_read", "state_input"]},
+      {"no_overlap": ["cache_read", "window"]},
+      {"no_overlap": ["cache_read", "x"]},
+      {"no_overlap": ["cache_read", "filter"]},
+      {"no_overlap": ["cache_read", "dst"]},
+      {"no_overlap": ["x", "filter"]},
+      {"no_overlap": ["filter", "dst"]}
+    ]
+  },
+  "derived": {},
+  "config": {
+    "mode": "compile",
+    "bindings": []
+  },
+  "invocation": {
+    "buffers": [
+      {
+        "name": "state_io",
+        "tensor": "cache_read",
+        "position": 0,
+        "kind": "inout"
+      },
+      {
+        "name": "x",
+        "tensor": "x",
+        "position": 1,
+        "kind": "input"
+      },
+      {
+        "name": "filt",
+        "tensor": "filter",
+        "position": 2,
+        "kind": "input"
+      },
+      {
+        "name": "dst",
+        "tensor": "dst",
+        "position": 3,
+        "kind": "output"
+      }
+    ],
+    "scalars": [],
+    "dispatch": {
+      "workgroups": [32, 1, 1],
+      "workgroup_size": [256, 1, 1]
+    }
+  },
+  "architectures": ["gfx1151"]
+}

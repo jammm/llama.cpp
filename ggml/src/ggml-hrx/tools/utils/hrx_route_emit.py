@@ -28,6 +28,10 @@ ATTRIBUTE_INDICES = {
     "GGML_OP_L2_NORM": {
         "eps": 0,
     },
+    "GGML_OP_MUL_MAT": {
+        "precision": 0,
+        "hint": 1,
+    },
     "GGML_OP_ROPE": {
         "n_dims": 1,
         "mode": 2,
@@ -156,6 +160,12 @@ def emit_tensor_element_count_source(tensor, parts):
     return f"ggml_nelements({tensor})"
 
 
+def emit_tensor_view_offset_source(tensor, parts):
+    if len(parts) != 3:
+        raise ValueError("tensor view_offset source does not accept an index")
+    return f"static_cast<int64_t>({tensor}->view_offs)"
+
+
 def emit_tensor_vector_source(tensor, parts, field):
     if len(parts) == 3:
         field_name = "ne" if field == "dimensions" else "nb"
@@ -194,6 +204,7 @@ TENSOR_FIELD_EMITTERS = {
     "type": emit_tensor_type_source,
     "rank": emit_tensor_rank_source,
     "element_count": emit_tensor_element_count_source,
+    "view_offset": emit_tensor_view_offset_source,
     "dimensions": emit_tensor_dimensions_source,
     "strides": emit_tensor_strides_source,
     "element_strides": emit_tensor_element_strides_source,
@@ -425,6 +436,16 @@ def emit_product(value, context, scalar_type):
     return expr if expr else scalar_literal(1, scalar_type)
 
 
+def emit_sum(value, context, scalar_type):
+    del context
+    operands = [
+        source_expr(item) if isinstance(item, str) else str(int(item))
+        for item in value
+    ]
+    expr = " + ".join([typed_expr(operand, scalar_type) for operand in operands])
+    return expr if expr else scalar_literal(0, scalar_type)
+
+
 def emit_ceil_div(value, context, scalar_type, schema):
     lhs = emit_integer_operand(value[0], context, schema)
     rhs = emit_integer_operand(value[1], context, schema)
@@ -457,6 +478,12 @@ def emit_derived_product(item, context, scalar_type, schema, next_power_of_2_fun
     return emit_product(item["product"], context, scalar_type)
 
 
+def emit_derived_sum(item, context, scalar_type, schema, next_power_of_2_function):
+    del schema
+    del next_power_of_2_function
+    return emit_sum(item["sum"], context, scalar_type)
+
+
 def emit_derived_ceil_div(item, context, scalar_type, schema, next_power_of_2_function):
     del next_power_of_2_function
     return emit_ceil_div(item["ceil_div"], context, scalar_type, schema)
@@ -470,6 +497,7 @@ DERIVED_EMITTERS = {
     "field": emit_derived_field,
     "value": emit_derived_value,
     "product": emit_derived_product,
+    "sum": emit_derived_sum,
     "ceil_div": emit_derived_ceil_div,
     "next_power_of_2": emit_derived_next_power_of_2,
 }
@@ -587,20 +615,29 @@ def emit_field_predicate(predicate, context, schema):
 
 
 def emit_src_absent_predicate(predicate, context, schema):
-    del context
-    del schema
+    fusion_context_type = getattr(schema, "FusionRouteContext", ())
+    if isinstance(context, fusion_context_type):
+        return f"{role_var(predicate['src_absent'])} == nullptr"
     return f"{role_expr(predicate['src_absent'])} == nullptr"
 
 
 def emit_src_present_predicate(predicate, context, schema):
-    del context
-    del schema
+    fusion_context_type = getattr(schema, "FusionRouteContext", ())
+    if isinstance(context, fusion_context_type):
+        return f"{role_var(predicate['src_present'])} != nullptr"
     return f"{role_expr(predicate['src_present'])} != nullptr"
 
 
 def emit_transients_predicate(predicate, context, schema):
-    del context
     del schema
+    node_indices = getattr(context, "transient_node_indices", None)
+    node_count = getattr(context, "transient_node_count", None)
+    if node_indices is not None:
+        return " && ".join([
+            "ggml_backend_hrx_loom_tensor_is_transient_at_indices("
+            f"request, {role_var(tensor)}, {node_indices}, {node_count})"
+            for tensor in predicate["transients"]
+        ])
     return " && ".join([
         f"ggml_backend_hrx_loom_tensor_is_transient(request, {role_var(tensor)}, matched_node_count)"
         for tensor in predicate["transients"]
@@ -614,6 +651,30 @@ def emit_no_overlap_predicate(predicate, context, schema):
     return f"!ggml_backend_hrx_loom_tensors_overlap({role_var(lhs)}, {role_var(rhs)})"
 
 
+def emit_same_or_disjoint_storage_predicate(predicate, context, schema):
+    del context
+    del schema
+    tensors = predicate["same_or_disjoint_storage"]
+    conditions = []
+    for i, lhs in enumerate(tensors):
+        for rhs in tensors[i + 1:]:
+            conditions.append(
+                "ggml_backend_hrx_loom_tensors_are_same_or_disjoint("
+                f"{role_var(lhs)}, {role_var(rhs)})"
+            )
+    return " && ".join(conditions)
+
+
+def emit_consumers_through_view_predicate(predicate, context, schema):
+    del context
+    del schema
+    value = predicate["consumers_through_view"]
+    return (
+        "ggml_backend_hrx_loom_tensor_consumers_through_view("
+        f"request, {role_var(value['owner'])}, {role_var(value['view'])})"
+    )
+
+
 PREDICATE_EMITTERS = {
     "contiguous": emit_contiguous_predicate,
     "same_shape": emit_same_shape_predicate,
@@ -624,6 +685,8 @@ PREDICATE_EMITTERS = {
     "src_present": emit_src_present_predicate,
     "transients": emit_transients_predicate,
     "no_overlap": emit_no_overlap_predicate,
+    "same_or_disjoint_storage": emit_same_or_disjoint_storage_predicate,
+    "consumers_through_view": emit_consumers_through_view_predicate,
 }
 
 

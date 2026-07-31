@@ -58,6 +58,9 @@ struct ggml_backend_hrx_loom_op_response {
 struct ggml_backend_hrx_loom_consumed_nodes {
     int count;
     int indices[GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES];
+    // Non-negative only when this response claims nodes now but defers the
+    // fused dispatch until the named graph node is reached.
+    int dispatch_owner_node_index = -1;
 };
 
 ggml_backend_hrx_loom_catalog * ggml_backend_hrx_loom_catalog_new(hrx_device_t device, const char * architecture);

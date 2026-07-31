@@ -1513,14 +1513,21 @@ static enum ggml_status ggml_backend_hrx_invoke_loom(
         &request,
         consumed_nodes);
     if (response.result == GGML_BACKEND_HRX_LOOM_INVOKED) {
-        ggml_backend_hrx_trace_event(context->device_context->reg_context, {
-            {"event", "loom_route_dispatch"},
-            {"device", context->device_context->name},
-            {"route_id", response.route_id ? response.route_id : ""},
-            {"op", ggml_op_desc(node)},
-            {"nelements", ggml_nelements(node)},
-            {"consumed_node_count", consumed_nodes ? consumed_nodes->count : 0},
-        });
+        ggml_backend_hrx_reg_context * reg_context =
+            context->device_context->reg_context;
+        if (reg_context && reg_context->trace_jsonl.is_open()) {
+            ggml_backend_hrx_trace_event(reg_context, {
+                {"event", consumed_nodes &&
+                              consumed_nodes->dispatch_owner_node_index >= 0 ?
+                              "loom_route_deferred" :
+                              "loom_route_dispatch"},
+                {"device", context->device_context->name},
+                {"route_id", response.route_id ? response.route_id : ""},
+                {"op", ggml_op_desc(node)},
+                {"nelements", ggml_nelements(node)},
+                {"consumed_node_count", consumed_nodes ? consumed_nodes->count : 0},
+            });
+        }
         return GGML_STATUS_SUCCESS;
     }
     if (response.result == GGML_BACKEND_HRX_LOOM_FAILED) {
@@ -1544,30 +1551,92 @@ static bool ggml_backend_hrx_consumed_nodes_contains(
     return false;
 }
 
-static int ggml_backend_hrx_graph_node_index(const ggml_cgraph * cgraph, const ggml_tensor * tensor) {
-    if (!cgraph || !tensor) {
+static int ggml_backend_hrx_graph_node_index(
+        const ggml_cgraph * cgraph,
+        const ggml_tensor * tensor,
+        const std::vector<int> & node_indices) {
+    if (!cgraph || !tensor ||
+        node_indices.size() != cgraph->visited_hash_set.size) {
         return -1;
     }
-    for (int i = 0; i < cgraph->n_nodes; ++i) {
-        if (cgraph->nodes[i] == tensor) {
-            return i;
+    const size_t hash_pos =
+        ggml_hash_find(&cgraph->visited_hash_set, tensor);
+    if (hash_pos == GGML_HASHSET_FULL ||
+        hash_pos >= node_indices.size() ||
+        !ggml_bitset_get(cgraph->visited_hash_set.used, hash_pos) ||
+        cgraph->visited_hash_set.keys[hash_pos] != tensor) {
+        return -1;
+    }
+    const int node_index = node_indices[hash_pos];
+    if (node_index < 0 || node_index >= cgraph->n_nodes ||
+        cgraph->nodes[node_index] != tensor) {
+        return -1;
+    }
+    return node_index;
+}
+
+static bool ggml_backend_hrx_validate_consumed_source(
+        const ggml_cgraph * cgraph,
+        int node_index,
+        const ggml_tensor * source,
+        const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
+        const std::vector<bool> & visited_nodes,
+        const std::vector<int> & node_indices,
+        int depth) {
+    if (!source || depth > cgraph->n_nodes) {
+        return source == nullptr;
+    }
+    const int producer_index =
+        ggml_backend_hrx_graph_node_index(
+            cgraph, source, node_indices);
+    if (producer_index < 0 || producer_index < node_index ||
+            visited_nodes[producer_index] ||
+            ggml_backend_hrx_consumed_nodes_contains(
+                consumed_nodes,
+                producer_index)) {
+        return true;
+    }
+    const ggml_tensor * producer = cgraph->nodes[producer_index];
+    if (!ggml_backend_hrx_is_metadata_op(producer)) {
+        return false;
+    }
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        if (!ggml_backend_hrx_validate_consumed_source(
+                cgraph,
+                node_index,
+                producer->src[i],
+                consumed_nodes,
+                visited_nodes,
+                node_indices,
+                depth + 1)) {
+            return false;
         }
     }
-    return -1;
+    return true;
 }
 
 static bool ggml_backend_hrx_validate_consumed_nodes(
         const ggml_cgraph * cgraph,
         int node_index,
         const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
-        const std::vector<bool> & visited_nodes) {
+        const std::vector<bool> & visited_nodes,
+        const std::vector<int> & node_indices) {
+    const bool deferred =
+        consumed_nodes &&
+        consumed_nodes->dispatch_owner_node_index >= 0;
     if (!cgraph || !consumed_nodes || node_index < 0 || node_index >= cgraph->n_nodes ||
             consumed_nodes->count < 1 ||
-            consumed_nodes->count > GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
+            consumed_nodes->count > GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES ||
+            (deferred &&
+             (consumed_nodes->count < 2 ||
+              consumed_nodes->dispatch_owner_node_index <= node_index ||
+              consumed_nodes->dispatch_owner_node_index >=
+                  cgraph->n_nodes))) {
         return false;
     }
 
     bool has_current_node = false;
+    bool has_dispatch_owner = !deferred;
     for (int i = 0; i < consumed_nodes->count; ++i) {
         const int consumed_index = consumed_nodes->indices[i];
         if (consumed_index < node_index || consumed_index >= cgraph->n_nodes || visited_nodes[consumed_index]) {
@@ -1579,22 +1648,36 @@ static bool ggml_backend_hrx_validate_consumed_nodes(
         if (consumed_index == node_index) {
             has_current_node = true;
         }
+        if (consumed_index ==
+            consumed_nodes->dispatch_owner_node_index) {
+            has_dispatch_owner = true;
+        }
         for (int j = i + 1; j < consumed_nodes->count; ++j) {
             if (consumed_index == consumed_nodes->indices[j]) {
                 return false;
             }
         }
     }
-    if (!has_current_node) {
+    if (!has_current_node || !has_dispatch_owner) {
         return false;
     }
 
+    // A deferred fusion may depend on an external producer between its anchor
+    // and owner, but never on one scheduled after the owner.
+    const int ready_node_index = deferred ?
+        consumed_nodes->dispatch_owner_node_index :
+        node_index;
     for (int i = 0; i < consumed_nodes->count; ++i) {
         const ggml_tensor * consumed_node = cgraph->nodes[consumed_nodes->indices[i]];
         for (int j = 0; j < GGML_MAX_SRC; ++j) {
-            const int producer_index = ggml_backend_hrx_graph_node_index(cgraph, consumed_node->src[j]);
-            if (producer_index >= node_index && !visited_nodes[producer_index] &&
-                    !ggml_backend_hrx_consumed_nodes_contains(consumed_nodes, producer_index)) {
+            if (!ggml_backend_hrx_validate_consumed_source(
+                    cgraph,
+                    ready_node_index,
+                    consumed_node->src[j],
+                    consumed_nodes,
+                    visited_nodes,
+                    node_indices,
+                    0)) {
                 return false;
             }
         }
@@ -1605,8 +1688,15 @@ static bool ggml_backend_hrx_validate_consumed_nodes(
 static void ggml_backend_hrx_mark_consumed_nodes(
         const ggml_backend_hrx_loom_consumed_nodes * consumed_nodes,
         std::vector<bool> & visited_nodes) {
+    const int stop_index =
+        consumed_nodes->dispatch_owner_node_index >= 0 ?
+        consumed_nodes->dispatch_owner_node_index :
+        std::numeric_limits<int>::max();
     for (int i = 0; i < consumed_nodes->count; ++i) {
-        visited_nodes[consumed_nodes->indices[i]] = true;
+        const int consumed_index = consumed_nodes->indices[i];
+        if (consumed_index < stop_index) {
+            visited_nodes[consumed_index] = true;
+        }
     }
 }
 
@@ -1631,8 +1721,31 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
     }
 
     std::vector<bool> visited_nodes(cgraph ? cgraph->n_nodes : 0, false);
+    std::vector<bool> deferred_owner_nodes(
+        cgraph ? cgraph->n_nodes : 0,
+        false);
+    std::vector<int> node_indices(
+        cgraph ? cgraph->visited_hash_set.size : 0,
+        -1);
     for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+        const size_t hash_pos =
+            ggml_hash_find(
+                &cgraph->visited_hash_set,
+                cgraph->nodes[i]);
+        if (hash_pos == GGML_HASHSET_FULL ||
+            hash_pos >= node_indices.size() ||
+            !ggml_bitset_get(cgraph->visited_hash_set.used, hash_pos) ||
+            cgraph->visited_hash_set.keys[hash_pos] != cgraph->nodes[i]) {
+            return GGML_STATUS_FAILED;
+        }
+        node_indices[hash_pos] = i;
+    }
+    for (int i = 0; cgraph && i < cgraph->n_nodes; ++i) {
+        const bool force_deferred_loom = deferred_owner_nodes[i];
         if (visited_nodes[i]) {
+            if (force_deferred_loom) {
+                return GGML_STATUS_FAILED;
+            }
             continue;
         }
         const ggml_tensor * node = cgraph->nodes[i];
@@ -1649,8 +1762,22 @@ static enum ggml_status ggml_backend_hrx_graph_compute(ggml_backend_t backend, g
             return status;
         }
         if (!unsupported) {
-            if (!ggml_backend_hrx_validate_consumed_nodes(cgraph, i, &consumed_nodes, visited_nodes)) {
+            if (!ggml_backend_hrx_validate_consumed_nodes(
+                    cgraph,
+                    i,
+                    &consumed_nodes,
+                    visited_nodes,
+                    node_indices)) {
                 return GGML_STATUS_FAILED;
+            }
+            if (consumed_nodes.dispatch_owner_node_index >= 0) {
+                if (force_deferred_loom ||
+                    deferred_owner_nodes[
+                        consumed_nodes.dispatch_owner_node_index]) {
+                    return GGML_STATUS_FAILED;
+                }
+                deferred_owner_nodes[
+                    consumed_nodes.dispatch_owner_node_index] = true;
             }
             ggml_backend_hrx_mark_consumed_nodes(&consumed_nodes, visited_nodes);
             continue;

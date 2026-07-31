@@ -11,11 +11,12 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-namespace {
-
 struct ggml_backend_hrx_loaded_loom_route {
+    const ggml_backend_hrx_loom_catalog_entry * entry = nullptr;
+    std::vector<ggml_backend_hrx_loom_config_binding> config_bindings;
     std::string                  cache_key;
     hrx_executable_t             executable     = nullptr;
     uint32_t                     export_ordinal = 0;
@@ -28,6 +29,13 @@ struct ggml_backend_hrx_loaded_loom_route {
         }
     }
 };
+
+struct ggml_backend_hrx_loaded_loom_route_bucket {
+    std::vector<ggml_backend_hrx_loaded_loom_route *> routes;
+    ggml_backend_hrx_loaded_loom_route *              most_recent = nullptr;
+};
+
+namespace {
 
 #define GGML_HRX_LOOM_CHECK(expr) ggml_backend_hrx_log_hrx_status((expr), #expr, __FILE__, __LINE__)
 
@@ -189,8 +197,12 @@ struct ggml_backend_hrx_loom_catalog {
     std::string                                                      architecture;
     std::string                                                      target;
     std::vector<std::unique_ptr<ggml_backend_hrx_loaded_loom_route>> routes;
+    std::unordered_map<
+        const ggml_backend_hrx_loom_catalog_entry *,
+        ggml_backend_hrx_loaded_loom_route_bucket>                   route_buckets;
 
     ~ggml_backend_hrx_loom_catalog() {
+        route_buckets.clear();
         routes.clear();
         if (device) {
             hrx_device_release(device);
@@ -199,6 +211,34 @@ struct ggml_backend_hrx_loom_catalog {
 };
 
 namespace {
+
+static void ggml_backend_hrx_loom_cache_loaded_route(
+    const ggml_backend_hrx_loom_kernel_plan * plan,
+    const ggml_backend_hrx_loom_catalog *     catalog,
+    ggml_backend_hrx_loaded_loom_route *      route) {
+    plan->loaded_route_catalog = catalog;
+    plan->loaded_route         = route;
+}
+
+static bool ggml_backend_hrx_loom_loaded_route_matches(
+    const ggml_backend_hrx_loaded_loom_route * route,
+    const ggml_backend_hrx_loom_kernel_plan *  plan) {
+    if (!route || !plan || route->entry != plan->entry ||
+        route->config_bindings.size() != plan->config_binding_count) {
+        return false;
+    }
+    for (size_t i = 0; i < plan->config_binding_count; ++i) {
+        const auto & lhs = route->config_bindings[i];
+        const auto & rhs = plan->config_bindings[i];
+        if (!lhs.type || !rhs.type ||
+            std::strcmp(lhs.name, rhs.name) != 0 ||
+            std::strcmp(lhs.value, rhs.value) != 0 ||
+            std::strcmp(lhs.type, rhs.type) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static constexpr size_t GGML_BACKEND_HRX_LOOM_SCRATCH_ALIGNMENT = 256;
 
@@ -250,14 +290,57 @@ struct ggml_backend_hrx_loom_scratch_state {
 struct ggml_backend_hrx_loom_invocation_context {
     hrx_device_t                                                   device = nullptr;
     std::vector<std::unique_ptr<ggml_backend_hrx_loom_scratch_state>> scratch;
+    std::vector<ggml_backend_hrx_loom_deferred_plan>                deferred;
+    ggml_backend_hrx_loom_graph_fact_cache                          graph_facts;
+    ggml_backend_hrx_loom_resolved_plan_cache                       resolved_plans;
 
     ~ggml_backend_hrx_loom_invocation_context() {
+        resolved_plans.clear();
+        graph_facts.clear();
+        deferred.clear();
         scratch.clear();
         if (device) {
             hrx_device_release(device);
         }
     }
 };
+
+static bool ggml_backend_hrx_loom_deferred_reads_survive(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_backend_hrx_loom_execution_plan & plan);
+
+bool ggml_backend_hrx_loom_plan_can_be_selected(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_backend_hrx_loom_execution_plan * plan) {
+    if (!request || !plan ||
+        plan->dispatch_owner_node_index <= request->node_index) {
+        return true;
+    }
+    if (!ggml_backend_hrx_loom_deferred_reads_survive(
+            request,
+            *plan)) {
+        return false;
+    }
+    return !request->invocation_context ||
+           ggml_backend_hrx_loom_deferred_queue_accepts_plan(
+               request->invocation_context->deferred,
+               *plan);
+}
+
+static bool ggml_backend_hrx_loom_cached_plan_can_be_selected(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_backend_hrx_loom_execution_plan * plan) {
+    if (!request || !plan) {
+        return false;
+    }
+    if (plan->dispatch_owner_node_index <= request->node_index) {
+        return true;
+    }
+    return !request->invocation_context ||
+           ggml_backend_hrx_loom_deferred_queue_accepts_plan(
+               request->invocation_context->deferred,
+               *plan);
+}
 
 const ggml_backend_hrx_loom_catalog_entry * ggml_backend_hrx_loom_find_entry(
     const ggml_backend_hrx_loom_catalog * catalog,
@@ -289,13 +372,34 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
                        plan->config_binding_count);
         return nullptr;
     }
-    const std::string cache_key = ggml_backend_hrx_loom_cache_key(catalog->target.c_str(), plan);
-    for (const auto & route : catalog->routes) {
-        if (route->cache_key == cache_key) {
-            return route.get();
+    if (plan->loaded_route_catalog == catalog && plan->loaded_route) {
+        return plan->loaded_route;
+    }
+    auto bucket_it = catalog->route_buckets.find(plan->entry);
+    if (bucket_it != catalog->route_buckets.end()) {
+        auto & bucket = bucket_it->second;
+        if (ggml_backend_hrx_loom_loaded_route_matches(
+                bucket.most_recent,
+                plan)) {
+            ggml_backend_hrx_loom_cache_loaded_route(
+                plan, catalog, bucket.most_recent);
+            return bucket.most_recent;
+        }
+        for (auto * route : bucket.routes) {
+            if (route == bucket.most_recent ||
+                !ggml_backend_hrx_loom_loaded_route_matches(
+                    route,
+                    plan)) {
+                continue;
+            }
+            bucket.most_recent = route;
+            ggml_backend_hrx_loom_cache_loaded_route(
+                plan, catalog, route);
+            return route;
         }
     }
 
+    const std::string cache_key = ggml_backend_hrx_loom_cache_key(catalog->target.c_str(), plan);
     ggml_backend_hrx_loom_compile_input compile_input = {
         /* .source_data          = */ plan->entry->source_data,
         /* .source_size          = */ plan->entry->source_size,
@@ -343,6 +447,10 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
     }
 
     auto route            = std::make_unique<ggml_backend_hrx_loaded_loom_route>();
+    route->entry          = plan->entry;
+    route->config_bindings.assign(
+        plan->config_bindings,
+        plan->config_bindings + plan->config_binding_count);
     route->cache_key      = cache_key;
     route->executable     = executable;
     route->export_ordinal = export_ordinal;
@@ -352,7 +460,26 @@ static ggml_backend_hrx_loaded_loom_route * ggml_backend_hrx_loom_get_loaded_rou
     }
     catalog->routes.push_back(std::move(route));
     ggml_backend_hrx_loom_compile_output_free(&compile_output);
-    return catalog->routes.back().get();
+    auto * loaded_route = catalog->routes.back().get();
+    auto & bucket = catalog->route_buckets[plan->entry];
+    bucket.routes.push_back(loaded_route);
+    bucket.most_recent = loaded_route;
+    ggml_backend_hrx_loom_cache_loaded_route(
+        plan, catalog, loaded_route);
+    return loaded_route;
+}
+
+static bool ggml_backend_hrx_loom_resolve_loaded_routes(
+    ggml_backend_hrx_loom_catalog *              catalog,
+    const ggml_backend_hrx_loom_execution_plan * plan) {
+    for (size_t i = 0; i < plan->prepass_count; ++i) {
+        if (!ggml_backend_hrx_loom_get_loaded_route(
+                catalog, &plan->prepasses[i].kernel)) {
+            return false;
+        }
+    }
+    return ggml_backend_hrx_loom_get_loaded_route(
+               catalog, &plan->main) != nullptr;
 }
 
 static bool ggml_backend_hrx_loom_dispatch_kernel_plan_impl(
@@ -469,6 +596,218 @@ static bool ggml_backend_hrx_loom_is_metadata_op(const ggml_tensor * node) {
         default:
             return false;
     }
+}
+
+static const ggml_tensor * ggml_backend_hrx_loom_metadata_parent(
+    const ggml_tensor * tensor) {
+    if (!tensor || !ggml_backend_hrx_loom_is_metadata_op(tensor)) {
+        return nullptr;
+    }
+    return tensor->src[0] ? tensor->src[0] : tensor->view_src;
+}
+
+static bool ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+    const ggml_tensor * value,
+    const ggml_tensor * source) {
+    if (value == source) {
+        return true;
+    }
+    while (value && ggml_backend_hrx_loom_is_metadata_op(value)) {
+        const ggml_tensor * next =
+            ggml_backend_hrx_loom_metadata_parent(value);
+        if (!next || next == value) {
+            return false;
+        }
+        value = next;
+        if (value == source) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ggml_backend_hrx_loom_tensor_is_graph_output_runtime(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor) {
+    if (!request || !request->cgraph || !tensor) {
+        return true;
+    }
+    if ((tensor->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+        return true;
+    }
+    for (int i = 0; i < request->cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = request->cgraph->nodes[i];
+        if (node && (node->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 &&
+            ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+                node, tensor)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ggml_backend_hrx_loom_node_index_is_listed_runtime(
+    int         node_index,
+    const int * node_indices,
+    int         node_count) {
+    for (int i = 0; i < node_count; ++i) {
+        if (node_indices[i] == node_index) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ggml_backend_hrx_loom_tensor_is_transient_runtime(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const int *                              consumed_node_indices,
+    int                                      consumed_node_count) {
+    if (!request || !request->cgraph || !tensor ||
+        !consumed_node_indices || consumed_node_count <= 0 ||
+        ggml_backend_hrx_loom_tensor_is_graph_output_runtime(
+            request, tensor)) {
+        return false;
+    }
+    bool consumed_inside = false;
+    for (int i = 0; i < request->cgraph->n_nodes; ++i) {
+        const ggml_tensor * consumer = request->cgraph->nodes[i];
+        if (!consumer || consumer == tensor ||
+            ggml_backend_hrx_loom_is_metadata_op(consumer) ||
+            ggml_nelements(consumer) == 0) {
+            continue;
+        }
+        bool consumes_tensor = false;
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            consumes_tensor = consumes_tensor ||
+                ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+                    consumer->src[j], tensor);
+        }
+        if (!consumes_tensor) {
+            continue;
+        }
+        if (!ggml_backend_hrx_loom_node_index_is_listed_runtime(
+                i, consumed_node_indices, consumed_node_count)) {
+            return false;
+        }
+        consumed_inside = true;
+    }
+    return consumed_inside;
+}
+
+static bool ggml_backend_hrx_loom_tensor_consumers_through_view_runtime(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      owner,
+    const ggml_tensor *                      view) {
+    if (!request || !request->cgraph || !owner || !view ||
+        owner == view ||
+        !ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+            view, owner) ||
+        (owner->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+        return false;
+    }
+    for (int i = 0; i < request->cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = request->cgraph->nodes[i];
+        if (!node) {
+            continue;
+        }
+        if ((node->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 &&
+            ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+                node, owner) &&
+            !ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+                node, view)) {
+            return false;
+        }
+        if (ggml_backend_hrx_loom_is_metadata_op(node) ||
+            ggml_nelements(node) == 0) {
+            continue;
+        }
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const ggml_tensor * input = node->src[j];
+            if (ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+                    input, owner) &&
+                !ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+                    input, view)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static size_t ggml_backend_hrx_loom_graph_fact_slot(
+    const ggml_backend_hrx_loom_graph_facts & facts,
+    const ggml_tensor *                       tensor) {
+    if (!facts.cgraph || !tensor || facts.visited_hash_size == 0 ||
+        !facts.visited_keys || !facts.visited_used ||
+        facts.tensors.size() != facts.visited_hash_size) {
+        return GGML_HASHSET_FULL;
+    }
+    const ggml_hash_set & visited = facts.cgraph->visited_hash_set;
+    if (visited.size != facts.visited_hash_size ||
+        visited.keys != facts.visited_keys ||
+        visited.used != facts.visited_used) {
+        return GGML_HASHSET_FULL;
+    }
+    const size_t slot = ggml_hash_find(&visited, tensor);
+    if (slot == GGML_HASHSET_FULL || slot >= facts.tensors.size() ||
+        !ggml_bitset_get(visited.used, slot) ||
+        visited.keys[slot] != tensor) {
+        return GGML_HASHSET_FULL;
+    }
+    return slot;
+}
+
+static bool ggml_backend_hrx_loom_record_graph_observation_path(
+    ggml_backend_hrx_loom_graph_facts * facts,
+    const ggml_tensor *                 endpoint,
+    int                                 consumer_node_index,
+    bool                                graph_output) {
+    if (!facts || !endpoint) {
+        return endpoint == nullptr;
+    }
+    const ggml_tensor * value = endpoint;
+    size_t traversed = 0;
+    while (value) {
+        const size_t slot =
+            ggml_backend_hrx_loom_graph_fact_slot(*facts, value);
+        if (slot != GGML_HASHSET_FULL) {
+            auto & tensor_facts = facts->tensors[slot];
+            if (tensor_facts.observation_count == SIZE_MAX) {
+                return false;
+            }
+            ++tensor_facts.observation_count;
+            tensor_facts.graph_output =
+                tensor_facts.graph_output || graph_output;
+
+            if (consumer_node_index >= 0 &&
+                consumer_node_index < facts->n_nodes &&
+                facts->nodes[consumer_node_index] != value &&
+                tensor_facts.consumer_count <=
+                    GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
+                const uint8_t count = tensor_facts.consumer_count;
+                if (count == 0 ||
+                    tensor_facts.consumer_indices[count - 1] !=
+                        consumer_node_index) {
+                    tensor_facts.consumer_indices[count] =
+                        consumer_node_index;
+                    tensor_facts.consumer_count =
+                        static_cast<uint8_t>(count + 1);
+                }
+            }
+        }
+
+        if (!ggml_backend_hrx_loom_is_metadata_op(value)) {
+            break;
+        }
+        const ggml_tensor * next =
+            ggml_backend_hrx_loom_metadata_parent(value);
+        if (next == value || ++traversed > facts->visited_hash_size) {
+            return false;
+        }
+        value = next;
+    }
+    return true;
 }
 
 static bool ggml_backend_hrx_loom_scratch_source_unchanged(
@@ -588,6 +927,217 @@ static bool ggml_backend_hrx_loom_patch_scratch_bindings(
 }
 
 }  // namespace
+
+bool ggml_backend_hrx_loom_graph_facts::build(
+    const ggml_backend_hrx_loom_op_request * request) {
+    cgraph            = nullptr;
+    uid               = 0;
+    execution_epoch   = 0;
+    n_nodes           = 0;
+    nodes             = nullptr;
+    visited_keys      = nullptr;
+    visited_used      = nullptr;
+    visited_hash_size = 0;
+    tensors.clear();
+
+    if (!request || !request->cgraph ||
+        request->cgraph->n_nodes < 0 ||
+        (request->cgraph->n_nodes > 0 && !request->cgraph->nodes) ||
+        request->cgraph->visited_hash_set.size == 0 ||
+        !request->cgraph->visited_hash_set.keys ||
+        !request->cgraph->visited_hash_set.used) {
+        return false;
+    }
+
+    cgraph            = request->cgraph;
+    uid               = cgraph->uid;
+    execution_epoch   = request->execution_epoch;
+    n_nodes           = cgraph->n_nodes;
+    nodes             = cgraph->nodes;
+    visited_keys      = cgraph->visited_hash_set.keys;
+    visited_used      = cgraph->visited_hash_set.used;
+    visited_hash_size = cgraph->visited_hash_set.size;
+    tensors.resize(visited_hash_size);
+
+    for (int node_index = 0; node_index < n_nodes; ++node_index) {
+        const ggml_tensor * node = nodes[node_index];
+        if (!node) {
+            continue;
+        }
+        if ((node->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 &&
+            !ggml_backend_hrx_loom_record_graph_observation_path(
+                this,
+                node,
+                -1,
+                true)) {
+            tensors.clear();
+            cgraph = nullptr;
+            return false;
+        }
+        if (ggml_backend_hrx_loom_is_metadata_op(node) ||
+            ggml_nelements(node) == 0) {
+            continue;
+        }
+        for (int source_index = 0;
+             source_index < GGML_MAX_SRC;
+             ++source_index) {
+            const ggml_tensor * source = node->src[source_index];
+            if (source &&
+                !ggml_backend_hrx_loom_record_graph_observation_path(
+                    this,
+                    source,
+                    node_index,
+                    false)) {
+                tensors.clear();
+                cgraph = nullptr;
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool ggml_backend_hrx_loom_graph_facts::matches(
+    const ggml_backend_hrx_loom_op_request * request) const {
+    if (!request || !request->cgraph || !cgraph ||
+        request->cgraph != cgraph ||
+        request->cgraph->uid != uid ||
+        request->cgraph->n_nodes != n_nodes ||
+        request->cgraph->nodes != nodes ||
+        request->cgraph->visited_hash_set.size != visited_hash_size ||
+        request->cgraph->visited_hash_set.keys != visited_keys ||
+        request->cgraph->visited_hash_set.used != visited_used ||
+        tensors.size() != visited_hash_size) {
+        return false;
+    }
+    return uid != 0 || request->execution_epoch == execution_epoch;
+}
+
+const ggml_backend_hrx_loom_tensor_graph_facts *
+ggml_backend_hrx_loom_graph_facts::find(
+    const ggml_tensor * tensor) const {
+    const size_t slot =
+        ggml_backend_hrx_loom_graph_fact_slot(*this, tensor);
+    return slot == GGML_HASHSET_FULL ? nullptr : &tensors[slot];
+}
+
+const ggml_backend_hrx_loom_graph_facts *
+ggml_backend_hrx_loom_graph_fact_cache::resolve(
+    const ggml_backend_hrx_loom_op_request * request) {
+    if (!request || !request->cgraph) {
+        return nullptr;
+    }
+    for (auto it = graphs.begin(); it != graphs.end();) {
+        if (!*it) {
+            it = graphs.erase(it);
+            continue;
+        }
+        if ((*it)->matches(request)) {
+            return it->get();
+        }
+        if ((*it)->cgraph == request->cgraph) {
+            it = graphs.erase(it);
+            continue;
+        }
+        ++it;
+    }
+
+    auto facts =
+        std::make_unique<ggml_backend_hrx_loom_graph_facts>();
+    if (!facts->build(request)) {
+        return nullptr;
+    }
+    graphs.push_back(std::move(facts));
+    return graphs.back().get();
+}
+
+static const ggml_backend_hrx_loom_graph_facts *
+ggml_backend_hrx_loom_resolve_graph_facts(
+    const ggml_backend_hrx_loom_op_request * request,
+    ggml_backend_hrx_loom_graph_facts *      uncached) {
+    if (!request || !request->cgraph) {
+        return nullptr;
+    }
+    if (request->invocation_context) {
+        return request->invocation_context->graph_facts.resolve(request);
+    }
+    return uncached && uncached->build(request) ? uncached : nullptr;
+}
+
+bool ggml_backend_hrx_loom_tensor_is_transient_at_indices_cached(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      tensor,
+    const int *                              consumed_node_indices,
+    int                                      consumed_node_count) {
+    if (!request || !request->cgraph || !tensor ||
+        !consumed_node_indices || consumed_node_count <= 0 ||
+        consumed_node_count >
+            GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES ||
+        (tensor->flags & GGML_TENSOR_FLAG_OUTPUT) != 0) {
+        return false;
+    }
+    ggml_backend_hrx_loom_graph_facts uncached;
+    const auto * graph_facts =
+        ggml_backend_hrx_loom_resolve_graph_facts(
+            request,
+            &uncached);
+    const auto * tensor_facts =
+        graph_facts ? graph_facts->find(tensor) : nullptr;
+    if (!tensor_facts) {
+        return ggml_backend_hrx_loom_tensor_is_transient_runtime(
+            request,
+            tensor,
+            consumed_node_indices,
+            consumed_node_count);
+    }
+    if (tensor_facts->graph_output ||
+        tensor_facts->consumer_count == 0 ||
+        tensor_facts->consumer_count >
+            GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
+        return false;
+    }
+    for (uint8_t i = 0; i < tensor_facts->consumer_count; ++i) {
+        bool consumed = false;
+        for (int j = 0; j < consumed_node_count; ++j) {
+            consumed = consumed ||
+                consumed_node_indices[j] ==
+                    tensor_facts->consumer_indices[i];
+        }
+        if (!consumed) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ggml_backend_hrx_loom_tensor_consumers_through_view_cached(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_tensor *                      owner,
+    const ggml_tensor *                      view) {
+    if (!request || !request->cgraph || !owner || !view ||
+        owner == view ||
+        (owner->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 ||
+        !ggml_backend_hrx_loom_tensor_follows_metadata_path_runtime(
+            view,
+            owner)) {
+        return false;
+    }
+    ggml_backend_hrx_loom_graph_facts uncached;
+    const auto * graph_facts =
+        ggml_backend_hrx_loom_resolve_graph_facts(
+            request,
+            &uncached);
+    const auto * owner_facts =
+        graph_facts ? graph_facts->find(owner) : nullptr;
+    const auto * view_facts =
+        graph_facts ? graph_facts->find(view) : nullptr;
+    if (!owner_facts || !view_facts) {
+        return ggml_backend_hrx_loom_tensor_consumers_through_view_runtime(
+            request, owner, view);
+    }
+    return owner_facts->observation_count ==
+           view_facts->observation_count;
+}
 
 bool ggml_backend_hrx_loom_bind_tensor(const ggml_backend_hrx_loom_op_request * request,
                                        const ggml_tensor *                      tensor,
@@ -972,7 +1522,10 @@ static bool ggml_backend_hrx_loom_dispatch_execution_plan(
             continue;
         }
         if (!ggml_backend_hrx_loom_dispatch_kernel_plan_impl(
-                catalog, request->stream, &prepass.kernel, bindings) ||
+                catalog,
+                request->stream,
+                &prepass.kernel,
+                bindings) ||
             !GGML_HRX_LOOM_CHECK(hrx_stream_execution_barrier(request->stream))) {
             return false;
         }
@@ -996,6 +1549,249 @@ static bool ggml_backend_hrx_loom_dispatch_execution_plan(
                bindings);
 }
 
+static const ggml_tensor * ggml_backend_hrx_loom_data_producer(
+    const ggml_tensor * tensor) {
+    const ggml_tensor * value = tensor;
+    while (value &&
+           ggml_backend_hrx_loom_is_metadata_op(value)) {
+        const ggml_tensor * next =
+            value->src[0] ? value->src[0] : value->view_src;
+        if (!next || next == value) {
+            return nullptr;
+        }
+        value = next;
+    }
+    return value;
+}
+
+static int ggml_backend_hrx_loom_graph_node_index(
+    const ggml_cgraph * graph,
+    const ggml_tensor * node) {
+    if (!graph || !node) {
+        return -1;
+    }
+    for (int i = 0; i < graph->n_nodes; ++i) {
+        if (graph->nodes[i] == node) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool ggml_backend_hrx_loom_plan_consumes_node(
+    const ggml_backend_hrx_loom_execution_plan & plan,
+    int                                           node_index) {
+    for (int i = 0; i < plan.consumed_node_count; ++i) {
+        if (plan.consumed_node_indices[i] == node_index) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ggml_backend_hrx_loom_kernel_access_masks_are_valid(
+    const ggml_backend_hrx_loom_kernel_plan & kernel) {
+    if (kernel.binding_count > GGML_BACKEND_HRX_LOOM_MAX_BINDINGS) {
+        return false;
+    }
+    const uint16_t valid_binding_mask =
+        static_cast<uint16_t>(
+            (UINT16_C(1) << kernel.binding_count) - 1);
+    return ((kernel.deferred_read_binding_mask |
+             kernel.deferred_write_binding_mask) &
+            static_cast<uint16_t>(~valid_binding_mask)) == 0;
+}
+
+static bool ggml_backend_hrx_loom_deferred_reads_survive(
+    const ggml_backend_hrx_loom_op_request * request,
+    const ggml_backend_hrx_loom_execution_plan & plan) {
+    const int owner_index = plan.dispatch_owner_node_index;
+    if (!request || !request->cgraph || !request->bind_tensor ||
+        owner_index <= request->node_index ||
+        owner_index >= request->cgraph->n_nodes ||
+        plan.prepass_count > GGML_BACKEND_HRX_LOOM_MAX_PREPASSES ||
+        !ggml_backend_hrx_loom_kernel_access_masks_are_valid(
+            plan.main)) {
+        return false;
+    }
+    for (size_t i = 0; i < plan.prepass_count; ++i) {
+        if (!ggml_backend_hrx_loom_kernel_access_masks_are_valid(
+                plan.prepasses[i].kernel)) {
+            return false;
+        }
+    }
+
+    struct deferred_read {
+        hrx_buffer_ref_t binding    = {};
+        int              ready_index = -1;
+    };
+    static constexpr size_t max_deferred_reads =
+        (GGML_BACKEND_HRX_LOOM_MAX_PREPASSES + 1) *
+        GGML_BACKEND_HRX_LOOM_MAX_BINDINGS;
+    std::array<deferred_read, max_deferred_reads> deferred_reads = {};
+    size_t deferred_read_count = 0;
+    struct deferred_write {
+        hrx_buffer_ref_t binding      = {};
+        int              logical_index = -1;
+    };
+    std::array<deferred_write, max_deferred_reads> deferred_writes = {};
+    size_t deferred_write_count = 0;
+
+    const auto collect_deferred_accesses =
+        [&](const ggml_backend_hrx_loom_kernel_plan & kernel) {
+        for (size_t i = 0; i < kernel.binding_count; ++i) {
+            const uint16_t binding_bit = UINT16_C(1) << i;
+            const hrx_buffer_ref_t & binding = kernel.bindings[i];
+            if ((kernel.deferred_read_binding_mask & binding_bit) != 0) {
+                if (!kernel.deferred_read_tensors[i] ||
+                    !binding.buffer || binding.length == 0) {
+                    return false;
+                }
+                const ggml_tensor * producer =
+                    ggml_backend_hrx_loom_data_producer(
+                        kernel.deferred_read_tensors[i]);
+                const int producer_index =
+                    ggml_backend_hrx_loom_graph_node_index(
+                        request->cgraph,
+                        producer);
+                if (producer_index >= owner_index ||
+                    (producer_index >= 0 &&
+                     ggml_backend_hrx_loom_plan_consumes_node(
+                         plan,
+                         producer_index)) ||
+                    deferred_read_count >= deferred_reads.size()) {
+                    return false;
+                }
+                deferred_reads[deferred_read_count++] = {
+                    /* .binding     = */ binding,
+                    /* .ready_index = */ producer_index > request->node_index ?
+                        producer_index : request->node_index,
+                };
+            }
+            if ((kernel.deferred_write_binding_mask & binding_bit) != 0) {
+                if (!kernel.deferred_write_tensors[i] ||
+                    !binding.buffer || binding.length == 0) {
+                    return false;
+                }
+                const ggml_tensor * logical_producer =
+                    ggml_backend_hrx_loom_data_producer(
+                        kernel.deferred_write_tensors[i]);
+                const int logical_index =
+                    ggml_backend_hrx_loom_graph_node_index(
+                        request->cgraph,
+                        logical_producer);
+                if (logical_index > owner_index) {
+                    if (!ggml_backend_hrx_loom_plan_consumes_node(
+                            plan,
+                            logical_index) ||
+                        deferred_write_count >= deferred_writes.size()) {
+                        return false;
+                    }
+                    deferred_writes[deferred_write_count++] = {
+                        /* .binding       = */ binding,
+                        /* .logical_index = */ logical_index,
+                    };
+                }
+            }
+        }
+        return true;
+    };
+
+    for (size_t i = 0; i < plan.prepass_count; ++i) {
+        if (!collect_deferred_accesses(plan.prepasses[i].kernel)) {
+            return false;
+        }
+    }
+    if (!collect_deferred_accesses(plan.main)) {
+        return false;
+    }
+
+    for (int node_index = request->node_index + 1;
+         node_index < owner_index;
+         ++node_index) {
+        const ggml_tensor * writer =
+            request->cgraph->nodes[node_index];
+        if (!writer ||
+            ggml_backend_hrx_loom_is_metadata_op(writer) ||
+            ggml_nelements(writer) == 0 ||
+            ggml_backend_hrx_loom_plan_consumes_node(
+                plan,
+                node_index)) {
+            continue;
+        }
+        hrx_buffer_ref_t writer_ref = {};
+        if (!request->bind_tensor(
+                request->bind_tensor_user_data,
+                writer,
+                &writer_ref)) {
+            return false;
+        }
+        for (size_t i = 0; i < deferred_read_count; ++i) {
+            if (ggml_backend_hrx_loom_deferred_write_conflicts(
+                    node_index,
+                    deferred_reads[i].ready_index,
+                    writer_ref,
+                    deferred_reads[i].binding)) {
+                return false;
+            }
+        }
+    }
+    for (int node_index = owner_index + 1;
+         node_index < request->cgraph->n_nodes;
+         ++node_index) {
+        bool needs_audit = false;
+        for (size_t i = 0; i < deferred_write_count; ++i) {
+            needs_audit =
+                needs_audit ||
+                node_index < deferred_writes[i].logical_index;
+        }
+        if (!needs_audit) {
+            break;
+        }
+        const ggml_tensor * accessor =
+            request->cgraph->nodes[node_index];
+        if (!accessor ||
+            ggml_backend_hrx_loom_is_metadata_op(accessor) ||
+            ggml_nelements(accessor) == 0 ||
+            ggml_backend_hrx_loom_plan_consumes_node(
+                plan,
+                node_index)) {
+            continue;
+        }
+        const auto access_conflicts_with_early_output =
+            [&](const ggml_tensor * tensor) {
+                if (!tensor || ggml_nelements(tensor) == 0) {
+                    return false;
+                }
+                hrx_buffer_ref_t access_ref = {};
+                if (!request->bind_tensor(
+                        request->bind_tensor_user_data,
+                        tensor,
+                        &access_ref)) {
+                    return true;
+                }
+                for (size_t i = 0; i < deferred_write_count; ++i) {
+                    if (node_index < deferred_writes[i].logical_index &&
+                        ggml_backend_hrx_loom_deferred_refs_overlap(
+                            access_ref,
+                            deferred_writes[i].binding)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+        if (access_conflicts_with_early_output(accessor)) {
+            return false;
+        }
+        for (int i = 0; i < GGML_MAX_SRC; ++i) {
+            if (access_conflicts_with_early_output(accessor->src[i])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
     ggml_backend_hrx_loom_catalog *          catalog,
     const ggml_backend_hrx_loom_op_request * request,
@@ -1007,24 +1803,152 @@ ggml_backend_hrx_loom_op_response ggml_backend_hrx_loom_invoke(
         return ggml_backend_hrx_loom_failed(nullptr);
     }
 
-    ggml_backend_hrx_loom_execution_plan plan     = {};
-    ggml_backend_hrx_loom_op_response    response = ggml_backend_hrx_loom_prepare_plan(catalog, request, &plan);
+    auto * invocation_context = request->invocation_context;
+    if (invocation_context && !invocation_context->deferred.empty()) {
+        ggml_backend_hrx_loom_deferred_plan ready = {};
+        const auto take_result =
+            ggml_backend_hrx_loom_take_deferred_plan(
+                invocation_context->deferred,
+                request->cgraph,
+                request->execution_epoch,
+                request->node_index,
+                &ready);
+        if (take_result ==
+            GGML_BACKEND_HRX_LOOM_DEFERRED_STALE) {
+            return ggml_backend_hrx_loom_failed(ready.route_id);
+        }
+        if (take_result ==
+            GGML_BACKEND_HRX_LOOM_DEFERRED_READY) {
+            if (!ready.plan ||
+                !consumed_nodes ||
+                !ggml_backend_hrx_loom_dispatch_execution_plan(
+                    catalog,
+                    request,
+                    ready.plan) ||
+                !ggml_backend_hrx_loom_copy_consumed_nodes_from(
+                    *ready.plan,
+                    request->node_index,
+                    consumed_nodes)) {
+                return ggml_backend_hrx_loom_failed(ready.route_id);
+            }
+            return ggml_backend_hrx_loom_supported(ready.route_id);
+        }
+    }
+
+    std::unique_ptr<ggml_backend_hrx_loom_execution_plan> prepared_plan;
+    const ggml_backend_hrx_loom_execution_plan * plan         = nullptr;
+    ggml_backend_hrx_loom_op_response response =
+        ggml_backend_hrx_loom_unsupported(
+            GGML_BACKEND_HRX_LOOM_UNSUPPORTED_NO_ROUTE);
+    bool prepared = false;
+    const auto * resolved =
+        invocation_context ?
+        invocation_context->resolved_plans.find(catalog, request) :
+        nullptr;
+    if (resolved &&
+        ggml_backend_hrx_loom_cached_plan_can_be_selected(
+            request,
+            resolved->plan.get())) {
+        plan = resolved->plan.get();
+        response = ggml_backend_hrx_loom_supported(
+            resolved->route_id);
+    } else {
+        prepared_plan.reset(
+            new (std::nothrow)
+                ggml_backend_hrx_loom_execution_plan());
+        if (!prepared_plan) {
+            return ggml_backend_hrx_loom_failed(nullptr);
+        }
+        response = ggml_backend_hrx_loom_prepare_plan(
+            catalog,
+            request,
+            prepared_plan.get());
+        plan     = prepared_plan.get();
+        prepared = true;
+    }
     if (response.result != GGML_BACKEND_HRX_LOOM_INVOKED) {
         return response;
+    }
+    if (plan->dispatch_owner_node_index > request->node_index) {
+        if (!invocation_context || !request->cgraph || !consumed_nodes ||
+            plan->dispatch_owner_node_index >= request->cgraph->n_nodes ||
+            plan->consumed_node_count < 1 ||
+            plan->consumed_node_count >
+                GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES) {
+            return ggml_backend_hrx_loom_failed(response.route_id);
+        }
+        bool owner_is_consumed = false;
+        for (int i = 0; i < plan->consumed_node_count; ++i) {
+            owner_is_consumed =
+                owner_is_consumed ||
+                plan->consumed_node_indices[i] ==
+                    plan->dispatch_owner_node_index;
+        }
+        if (!owner_is_consumed) {
+            return ggml_backend_hrx_loom_failed(response.route_id);
+        }
+        if (!ggml_backend_hrx_loom_resolve_loaded_routes(
+                catalog, plan)) {
+            return ggml_backend_hrx_loom_failed(response.route_id);
+        }
+        if (!ggml_backend_hrx_loom_copy_consumed_nodes_from(
+                *plan,
+                request->node_index,
+                consumed_nodes)) {
+            return ggml_backend_hrx_loom_failed(response.route_id);
+        }
+        ggml_backend_hrx_loom_deferred_plan deferred_plan = {
+            /* .cgraph          = */ request->cgraph,
+            /* .execution_epoch = */ request->execution_epoch,
+            /* .owner_index     = */ plan->dispatch_owner_node_index,
+            /* .route_id        = */ response.route_id,
+            /* .plan            = */ plan,
+            /* .owned_plan      = */ nullptr,
+        };
+        if (prepared) {
+            deferred_plan.owned_plan = std::move(prepared_plan);
+            deferred_plan.plan = deferred_plan.owned_plan.get();
+        }
+        if (!ggml_backend_hrx_loom_enqueue_deferred_plan(
+                invocation_context->deferred,
+                std::move(deferred_plan))) {
+            return ggml_backend_hrx_loom_unsupported(
+                GGML_BACKEND_HRX_LOOM_UNSUPPORTED_NO_ROUTE);
+        }
+        consumed_nodes->dispatch_owner_node_index =
+            plan->dispatch_owner_node_index;
+        if (prepared) {
+            invocation_context->resolved_plans.publish(
+                catalog,
+                request,
+                response.route_id,
+                *plan);
+        }
+        return response;
+    }
+    if (plan->dispatch_owner_node_index >= 0 &&
+        plan->dispatch_owner_node_index != request->node_index) {
+        return ggml_backend_hrx_loom_failed(response.route_id);
     }
     if (!ggml_backend_hrx_loom_dispatch_execution_plan(
             catalog,
             request,
-            &plan)) {
+            plan)) {
         return ggml_backend_hrx_loom_failed(response.route_id);
     }
-    if (consumed_nodes) {
-        consumed_nodes->count = plan.consumed_node_count;
-        const int copy_count = plan.consumed_node_count < GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES ?
-            plan.consumed_node_count : GGML_BACKEND_HRX_LOOM_MAX_CONSUMED_NODES;
-        for (int i = 0; i < copy_count; ++i) {
-            consumed_nodes->indices[i] = plan.consumed_node_indices[i];
-        }
+    if (consumed_nodes &&
+        !ggml_backend_hrx_loom_copy_consumed_nodes_from(
+            *plan,
+            request->node_index,
+            consumed_nodes)) {
+        return ggml_backend_hrx_loom_failed(response.route_id);
+    }
+    if (prepared && invocation_context) {
+        invocation_context->resolved_plans.publish(
+            catalog,
+            request,
+            response.route_id,
+            *plan);
     }
     return response;
 }
